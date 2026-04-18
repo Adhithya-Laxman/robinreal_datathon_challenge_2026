@@ -115,7 +115,10 @@ _VLM_TRIGGER_WORDS = {
     "bathroom", "bad", "salle de bain", "bagno",
     "garden", "garten", "jardin", "giardino",
     "balcony", "balkon", "balcon", "balcone",
-    "terrace", "terrasse", "terrazza",
+    "terrace", "terrasse", "terrazza", "terrasse",
+    "waschmaschine", "laundry", "lessive",
+    "ruhig", "quiet", "calme", "tranquillo",
+    "hell", "helle", "heller",
 }
 
 

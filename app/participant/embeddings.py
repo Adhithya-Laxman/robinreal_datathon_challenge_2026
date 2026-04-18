@@ -159,8 +159,8 @@ def _get_local_model():
                 model_name=settings.local_embedding_model,
                 providers=providers,
             )
-        except TypeError:
-            logger.warning("fastembed build does not accept providers=, falling back to defaults.")
+        except (TypeError, ValueError):
+            logger.warning("fastembed: requested providers unavailable, falling back to defaults.")
             _local_model = TextEmbedding(model_name=settings.local_embedding_model)
         logger.info("Local embedding model ready.")
         return _local_model
