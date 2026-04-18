@@ -34,13 +34,9 @@ services:
     volumes:
       - listings_data:/data
       - .:/app
-    deploy:
-      resources:
-        reservations:
-          devices:
-            - driver: nvidia
-              count: all
-              capabilities: [gpu]
+    # GPU is opt-in via docker-compose.gpu.yml:
+    #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+    # CPU-only teammates just run `docker compose up` as usual.
   mcp:
     build:
       context: .
