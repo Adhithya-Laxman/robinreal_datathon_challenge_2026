@@ -127,6 +127,7 @@ def _print_results(resp: UnifiedResponse) -> None:
         for key, label in (
             ("geo_transit_m", "transit"),
             ("geo_school_m", "school"),
+            ("geo_university_m", "uni"),
             ("distance_public_transport", "pt"),
         ):
             v = row.get(key)
@@ -185,7 +186,8 @@ def main() -> None:
     parser.add_argument("--weight", action="append", default=[],
                         metavar="KEY=VALUE",
                         help="override signal weight (repeatable). "
-                             "keys: dense, bm25, vlm, geo_transit, geo_school, price_band")
+                             "keys: dense, bm25, vlm, geo_transit, geo_school, "
+                             "geo_anchor, price_band")
     parser.add_argument("--json-out", type=Path, default=None,
                         metavar="PATH",
                         help="write full pipeline output (incl. descriptions, "

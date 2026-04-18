@@ -71,12 +71,14 @@ _SIGNAL_DEFAULTS: dict[str, tuple[float, bool]] = {
     "vlm":         (0.20, False),  # gated on visual soft descriptors
     "geo_transit": (0.10, False),  # gated on near_public_transport
     "geo_school":  (0.05, False),  # gated on near_schools / family_friendly
+    "geo_anchor":  (0.15, False),  # gated on soft.anchors (ETH, station, ...)
     "price_band":  (0.10, False),  # gated on price_intent
 }
 
 # Distance scale (meters) for exp(-d / tau) geo-proximity scoring.
 _TAU_TRANSIT = 500.0
 _TAU_SCHOOL = 1000.0
+_TAU_ANCHOR = 800.0   # ETH/EPFL/Uni proximity — "within walking distance"
 
 # The LLM (see `app/participant/schemas.py::SoftPreferences.weights`) emits
 # weights under its own naming convention. We translate them into the ranker's
@@ -91,7 +93,10 @@ _LLM_WEIGHT_KEY_MAP: dict[str, str] = {
     "modernity":     "vlm",
     # Geo / proximity signals.
     "transit":       "geo_transit",
-    "geo_anchor":    "geo_transit",
+    # `geo_anchor` is proximity to a named landmark (ETH, station, lake...).
+    # We score it off `geo_university_m` because the enrichment step populates
+    # that column specifically for ETH/EPFL/Uni anchors which dominate queries.
+    "geo_anchor":    "geo_anchor",
     # Price intent.
     "price_band":    "price_band",
     # Not yet implemented signals are ignored (but logged).
@@ -402,6 +407,20 @@ def unified_search(
         detail=(f"tau={_TAU_SCHOOL}m" if geo_school_scores else
                 "no geo_school_m column or all NULL"),
     ))
+    # `geo_anchor` is semantically "proximity to the named landmark(s) in the
+    # query". We use `geo_university_m` because the enrichment populated it
+    # for ETH/EPFL/Uni anchors, which dominate in practice.
+    geo_anchor_scores = _score_geo_distance(rows_by_id, "geo_university_m", _TAU_ANCHOR)
+    anchor_names = [a.text for a in soft.anchors if a.text]
+    stages.append(StageStatus(
+        name="geo_anchor",
+        state=("ok" if geo_anchor_scores else
+               ("missing" if "geo_university_m" not in geo_cols_found else "empty")),
+        scored=len(geo_anchor_scores),
+        detail=(f"tau={_TAU_ANCHOR}m anchors={anchor_names or '-'}"
+                if geo_anchor_scores else
+                "no geo_university_m column or all NULL"),
+    ))
 
     # --- Stage 6: price band -----------------------------------------------
     price_scores = _score_price_band(rows_by_id, soft.price_intent)
@@ -432,6 +451,7 @@ def unified_search(
         "vlm":         vlm_scores,
         "geo_transit": geo_transit_scores,
         "geo_school":  geo_school_scores,
+        "geo_anchor":  geo_anchor_scores,
         "price_band":  price_scores,
     }
 
@@ -825,6 +845,10 @@ def _gate_active(signal: str, soft: SoftPreferences, vlm_active: bool) -> bool:
         return bool(soft.near_public_transport)
     if signal == "geo_school":
         return bool(soft.near_schools or soft.family_friendly)
+    if signal == "geo_anchor":
+        # Open the gate if the LLM extracted any named landmark (ETH, station,
+        # lake...) OR explicitly assigned a geo_anchor weight.
+        return bool(soft.anchors) or float(soft.weights.get("geo_anchor", 0.0)) > 0
     if signal == "price_band":
         return soft.price_intent is not None
     return True
