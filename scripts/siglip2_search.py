@@ -28,11 +28,11 @@ from vision.search import (  # noqa: E402
     slugify,
 )
 
-DEFAULT_SHARDS_DIR = ROOT / "downloads" / "siglip2"
+DEFAULT_SHARDS_DIR = ROOT / "features_vlm" / "siglip2"
 DEFAULT_IMG_ROOT = ROOT / "downloads" / "prod"
 DEFAULT_SRED_ROOT = ROOT / "raw_data" / "sred_images"
 DEFAULT_RESULTS_DIR = ROOT / "results"
-DEFAULT_MODEL = "google/siglip2-base-patch16-256"
+DEFAULT_MODEL = "google/siglip2-so400m-patch14-384"
 
 
 def main() -> None:
