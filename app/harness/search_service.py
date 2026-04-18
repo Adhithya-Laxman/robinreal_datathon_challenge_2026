@@ -13,39 +13,74 @@ from app.participant.soft_filtering import filter_soft_facts
 
 _MIN_RESULTS = 5
 
+# Fields we will NEVER relax. If the user/LLM asked for a specific location,
+# a smaller result set from the correct place beats a bigger result set
+# from the wrong place. Showing "Dübendorf" for a "Zürich" query is worse
+# than showing only 2 listings.
+_INVIOLABLE_FIELDS: frozenset[str] = frozenset({
+    "city",
+    "canton",
+    "postal_code",
+    "latitude",
+    "longitude",
+    "radius_km",
+    "offer_type",         # rent vs buy — dropping this would be absurd
+    "object_category",    # Haus vs Wohnung — same reasoning
+})
 
-def filter_hard_facts(db_path: Path, hard_facts: HardFilters) -> list[dict[str, Any]]:
+
+def filter_hard_facts(
+    db_path: Path,
+    hard_facts: HardFilters,
+) -> tuple[list[dict[str, Any]], list[str]]:
+    """Apply hard filters, relaxing only non-location / non-category fields.
+
+    Returns
+    -------
+    results : list[dict]
+        Matching listing rows (possibly fewer than `_MIN_RESULTS`).
+    relaxed : list[str]
+        Names of fields that were relaxed in order to reach `_MIN_RESULTS`.
+        Empty list if the strict filter already produced enough results.
+        Never contains any field from `_INVIOLABLE_FIELDS`.
+    """
     results = search_listings(db_path, to_hard_filter_params(hard_facts))
     if len(results) >= _MIN_RESULTS:
-        return results
+        return results, []
 
-    # Relax constraints one by one from weakest to strongest until we get enough results
+    relaxed_fields: list[str] = []
     relaxed = hard_facts.model_copy()
-    relaxations = [
+
+    # Ordered from "most comfortable to drop" to "last resort".
+    # LOCATION fields (city, canton, postal_code, lat/lng, radius_km),
+    # offer_type, and object_category are intentionally absent — they
+    # are in _INVIOLABLE_FIELDS.
+    relaxations: list[tuple[str, Any]] = [
         ("max_area", None),
         ("min_area", None),
         ("features", None),
-        ("radius_km", lambda v: v * 2 if v else None),
         ("max_price", lambda v: int(v * 1.2) if v else None),
         ("min_price", lambda v: int(v * 0.8) if v else None),
         ("max_rooms", lambda v: v + 0.5 if v else None),
         ("min_rooms", lambda v: max(0, v - 0.5) if v else None),
-        ("max_area", None),
-        ("city", None),
-        ("canton", None),
+        ("max_floor", None),
+        ("min_floor", None),
     ]
 
     for field, transform in relaxations:
-        current = getattr(relaxed, field)
+        if field in _INVIOLABLE_FIELDS:   # belt + suspenders
+            continue
+        current = getattr(relaxed, field, None)
         if current is None:
             continue
-        new_value = transform(current) if transform else None
+        new_value = transform(current) if callable(transform) else transform
         setattr(relaxed, field, new_value)
+        relaxed_fields.append(field)
         results = search_listings(db_path, to_hard_filter_params(relaxed))
         if len(results) >= _MIN_RESULTS:
-            return results
+            return results, relaxed_fields
 
-    return results
+    return results, relaxed_fields
 
 
 def query_from_text(
@@ -59,7 +94,7 @@ def query_from_text(
     hard_facts.limit = limit
     hard_facts.offset = offset
     soft_facts = extract_soft_facts(query)
-    candidates = filter_hard_facts(db_path, hard_facts)
+    candidates, _relaxed = filter_hard_facts(db_path, hard_facts)
     candidates = filter_soft_facts(candidates, soft_facts)
     return ListingsResponse(
         listings=rank_listings(candidates, soft_facts),
@@ -74,7 +109,7 @@ def query_from_filters(
 ) -> ListingsResponse:
     structured_hard_facts = hard_facts or HardFilters()
     soft_facts = extract_soft_facts("")
-    candidates = filter_hard_facts(db_path, structured_hard_facts)
+    candidates, _relaxed = filter_hard_facts(db_path, structured_hard_facts)
     candidates = filter_soft_facts(candidates, soft_facts)
     return ListingsResponse(
         listings=rank_listings(candidates, soft_facts),

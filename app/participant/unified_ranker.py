@@ -327,14 +327,20 @@ def unified_search(
     ))
 
     # --- Stage 2: hard filter (+ relaxation) -------------------------------
+    # Location / offer_type / object_category are NEVER relaxed: showing a
+    # listing from the wrong city is worse than showing fewer listings.
+    # See app/harness/search_service._INVIOLABLE_FIELDS.
     hard.limit = 200                                 # wider pool for reranking
     hard.offset = 0
-    candidates = filter_hard_facts(db_path, hard)
+    candidates, relaxed_fields = filter_hard_facts(db_path, hard)
+    relaxed_note = (f" relaxed={relaxed_fields}"
+                    if relaxed_fields else " relaxed=none")
     stages.append(StageStatus(
         name="hard_filter",
         state="ok" if candidates else "empty",
         detail=(f"city={hard.city} max_price={hard.max_price} "
-                f"rooms=[{hard.min_rooms}, {hard.max_rooms}]"),
+                f"rooms=[{hard.min_rooms}, {hard.max_rooms}]"
+                f"{relaxed_note}"),
         scored=len(candidates),
     ))
     if not candidates:

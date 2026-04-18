@@ -109,9 +109,10 @@ def run_pipeline(query: str, top_k: int, alpha: float) -> None:
     hard = extract_hard_facts(query)
     print(f"\nHard filter extracted: {hard.model_dump(exclude_none=True)}")
 
-    candidates = filter_hard_facts(get_settings().db_path, hard)
+    candidates, relaxed_fields = filter_hard_facts(get_settings().db_path, hard)
     cand_ids = {c["listing_id"] for c in candidates}
-    print(f"Candidates after hard filter (+ relaxation if any): {len(cand_ids)}\n")
+    relaxed_note = f" (relaxed: {relaxed_fields})" if relaxed_fields else ""
+    print(f"Candidates after hard filter{relaxed_note}: {len(cand_ids)}\n")
     if not cand_ids:
         print("no candidates — widen your query")
         return
