@@ -1,0 +1,16 @@
+.DS_Store
+.venv/
+.pytest_cache/
+__pycache__/
+*.pyc
+
+data/
+*.db
+*.sqlite
+*.sqlite3
+
+.coverage
+htmlcov/
+
+apps_sdk/web/node_modules/
+apps_sdk/web/dist/
