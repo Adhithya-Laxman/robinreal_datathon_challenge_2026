@@ -29,6 +29,8 @@ Return ONLY a JSON object with these optional fields (omit fields not mentioned)
 - max_rooms: maximum number of rooms
 - features: list of required features from the available list
 - object_category: list of property types
+- min_area: minimum living area in sqm
+- max_area: maximum living area in sqm
 - sort_by: one of price_asc, price_desc, rooms_asc, rooms_desc
 """
 
@@ -76,5 +78,7 @@ def extract_hard_facts(query: str) -> HardFilters:
         max_rooms=data.get("max_rooms"),
         features=data.get("features"),
         object_category=data.get("object_category"),
+        min_area=data.get("min_area"),
+        max_area=data.get("max_area"),
         sort_by=data.get("sort_by"),
     )
