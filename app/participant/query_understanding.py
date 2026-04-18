@@ -59,6 +59,16 @@ Rules:
 - Set `language` to the query's primary language.
 - Provide `interpretation` in English as one short sentence the user would \
   recognize as "yes, that's what I meant".
+- ALWAYS populate `soft.weights` with per-signal importance in [0, 1] that \
+  REFLECT THIS SPECIFIC QUERY. The downstream ranker uses these to blend \
+  signals (dense text, bm25 lexical, image similarity, geo proximity, etc.) \
+  so they must be tailored, not generic. Examples:
+  * "bright modern apartment with a view" -> brightness=0.9, modernity=0.9, \
+    clip_image=0.8, dense_text=0.6, bm25=0.3.
+  * "3-Zimmer Wohnung near ETH" -> geo_anchor=0.9, dense_text=0.6, bm25=0.5.
+  * "cheap family home close to schools" -> price_band=0.8, \
+    feature_match=0.7, geo_anchor=0.6, dense_text=0.5.
+  Leave out signals that are irrelevant instead of setting them to 0.
 
 Always respond by calling the `record_query_understanding` tool exactly once."""
 
@@ -117,6 +127,7 @@ def _tool_schema() -> dict[str, Any]:
                 "soft": {
                     "type": "object",
                     "additionalProperties": False,
+                    "required": ["weights"],
                     "properties": {
                         "descriptors": {
                             "type": "array",
@@ -169,10 +180,12 @@ def _tool_schema() -> dict[str, Any]:
                             "type": "object",
                             "additionalProperties": {"type": "number"},
                             "description": (
-                                "Per-signal importance in [0,1]. Keys are any of: "
-                                "bm25, dense_text, clip_image, brightness, "
-                                "modernity, geo_anchor, transit, feature_match, "
-                                "price_band, freshness."
+                                "REQUIRED. Per-signal importance in [0,1], "
+                                "tailored to THIS query. Keys: bm25, "
+                                "dense_text, clip_image, brightness, modernity, "
+                                "geo_anchor, transit, feature_match, "
+                                "price_band, freshness. Include only signals "
+                                "the query actually cares about; omit the rest."
                             ),
                         },
                     },
@@ -326,6 +339,13 @@ def _assemble_understanding(
         anchors=anchors,
     )
 
+    # Defensive: Claude occasionally drops the `weights` object even though
+    # the schema marks it required. Derive a reasonable per-query weighting
+    # from the soft flags the LLM DID return so the ranker always has
+    # query-specific guidance (not just static defaults).
+    if not soft.weights:
+        soft.weights = _derive_weights_from_soft(soft)
+
     return QueryUnderstanding(
         raw_query=query,
         language=tool_input.get("language", "unknown"),
@@ -334,6 +354,36 @@ def _assemble_understanding(
         used_llm=used_llm,
         interpretation=tool_input.get("interpretation"),
     )
+
+
+def _derive_weights_from_soft(soft: SoftPreferences) -> dict[str, float]:
+    """Build query-specific weights from the soft flags.
+
+    This runs only when Claude returned structured soft preferences but
+    forgot to populate `weights`. It mirrors the reasoning in the system
+    prompt: visual flags push VLM signals, anchors push geo, etc.
+    """
+    w: dict[str, float] = {"dense_text": 0.6, "bm25": 0.4}
+
+    if soft.bright:
+        w["brightness"] = 0.9
+    if soft.modern or soft.new_build:
+        w["modernity"] = 0.8
+    if soft.nice_views or soft.balcony_or_terrace or soft.spacious:
+        w["clip_image"] = max(w.get("clip_image", 0.0), 0.75)
+    if soft.descriptors:
+        # Any descriptors at all suggest VLM could help.
+        w["clip_image"] = max(w.get("clip_image", 0.0), 0.6)
+
+    if soft.anchors:
+        w["geo_anchor"] = 0.9
+    if soft.near_public_transport:
+        w["transit"] = 0.8
+    if soft.price_intent:
+        w["price_band"] = 0.75
+    if soft.family_friendly or soft.near_schools:
+        w["feature_match"] = max(w.get("feature_match", 0.0), 0.6)
+    return w
 
 
 # ---- Heuristic fallback --------------------------------------------------

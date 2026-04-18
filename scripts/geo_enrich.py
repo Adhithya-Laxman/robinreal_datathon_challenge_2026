@@ -32,15 +32,25 @@ from pathlib import Path
 # Make app/ importable when running the script directly.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+from app.config import get_settings
 from app.geo.migrate import add_geo_columns
+from app.geo.poi import build_poi_trees, compute_poi_distances, fetch_swiss_pois
 from app.geo.reverse_geocode import reverse_geocode_batch
-from app.geo.poi import fetch_swiss_pois, build_poi_trees, compute_poi_distances
 
 
 def _parse_args() -> argparse.Namespace:
+    # Defaults come from app settings so the script works in both
+    # `docker compose exec` (DB at /data/listings.db via volume) and local
+    # dev (DB at data/listings.db). Override with --db / --geo-cache.
+    settings = get_settings()
+    default_db = settings.db_path
+    default_cache = Path(default_db).parent / "geo"
+
     p = argparse.ArgumentParser(description="Geo-enrich the listings SQLite database.")
-    p.add_argument("--db", default="data/listings.db", help="Path to SQLite DB")
-    p.add_argument("--geo-cache", default="data/geo", help="Overpass JSON cache dir")
+    p.add_argument("--db", default=str(default_db),
+                   help=f"Path to SQLite DB (default: {default_db})")
+    p.add_argument("--geo-cache", default=str(default_cache),
+                   help=f"Overpass JSON cache dir (default: {default_cache})")
     p.add_argument("--skip-reverse-geocode", action="store_true",
                    help="Skip the city/canton backfill step")
     p.add_argument("--skip-poi", action="store_true",

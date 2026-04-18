@@ -80,7 +80,9 @@ def get_settings() -> Settings:
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY") or None,
         anthropic_model_id=os.getenv(
             "ANTHROPIC_MODEL_ID",
-            "claude-sonnet-4-20250514",
+            # Current alias on the Anthropic direct API. Falls back to the
+            # Bedrock model ID only when Bedrock is the active backend.
+            "claude-sonnet-4-5",
         ),
         use_local_embeddings=os.getenv("USE_LOCAL_EMBEDDINGS", "0") == "1",
         local_embedding_model=os.getenv(
