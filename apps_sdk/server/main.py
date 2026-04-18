@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+import json
 import os
+import re
+from datetime import datetime
+from pathlib import Path
 from typing import Any
 
 import mcp.types as types
@@ -93,6 +97,17 @@ def build_search_tool_result(
     for item in listings:
         l = item.get("listing", {})
         features = ", ".join(l.get("features") or []) or "none"
+        lat, lon = l.get("latitude"), l.get("longitude")
+        coords = f"{lat}, {lon}" if lat is not None and lon is not None else "N/A"
+        image_urls = l.get("image_urls") or []
+        hero = l.get("hero_image_url")
+        all_images = ([hero] if hero else []) + [u for u in image_urls if u != hero]
+        images_text = ""
+        if all_images:
+            images_text = "Images:\n" + "\n".join(f"  {u}" for u in all_images[:5])
+            if len(all_images) > 5:
+                images_text += f"\n  (+{len(all_images) - 5} more)"
+            images_text += "\n"
         lines.append(
             f"---\n"
             f"Title: {l.get('title')}\n"
@@ -100,11 +115,13 @@ def build_search_tool_result(
             f"Price: CHF {l.get('price_chf')}/mo\n"
             f"Rooms: {l.get('rooms')} | Area: {l.get('living_area_sqm')} sqm\n"
             f"Address: {l.get('street')}, {l.get('postal_code')} {l.get('city')}, {l.get('canton')}\n"
+            f"Coordinates: {coords}\n"
             f"Available: {l.get('available_from')}\n"
             f"Type: {l.get('object_category')} ({l.get('offer_type')})\n"
             f"Features: {features}\n"
             f"Description: {l.get('description', '')[:300]}\n"
             f"URL: {l.get('original_listing_url')}\n"
+            f"{images_text}"
         )
     return types.CallToolResult(
         content=[types.TextContent(type="text", text="\n".join(lines))],
@@ -217,9 +234,22 @@ async def _handle_call_tool(req: types.CallToolRequest) -> types.ServerResult:
         limit=search_input.limit,
         offset=search_input.offset,
     )
+    try:
+        _save_results(query=search_input.query, payload=response_payload)
+    except Exception as exc:
+        print(f"[results] failed to save: {exc}", flush=True)
     return types.ServerResult(
         build_search_tool_result(query=search_input.query, payload=response_payload)
     )
+
+
+def _save_results(*, query: str, payload: dict[str, Any]) -> None:
+    results_dir = Path(os.getenv("RESULTS_DIR", "/results"))
+    results_dir.mkdir(parents=True, exist_ok=True)
+    slug = re.sub(r"[^\w]+", "_", query.lower()).strip("_")[:60]
+    timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+    out = results_dir / f"{timestamp}_{slug}.json"
+    out.write_text(json.dumps({"query": query, "results": payload}, indent=2, ensure_ascii=False))
 
 
 mcp._mcp_server.request_handlers[types.ReadResourceRequest] = _handle_read_resource
