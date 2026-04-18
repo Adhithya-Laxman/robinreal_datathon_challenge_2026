@@ -24,6 +24,8 @@ from apps_sdk.server.widget import (
 )
 
 SEARCH_TOOL_NAME = "search_listings"
+POI_TOOL_NAME = "get_nearby_pois"
+_VALID_POI_TYPES = ["transit", "supermarket", "school", "university"]
 MAP_RESOURCE_ORIGINS = [
     "https://a.basemaps.cartocdn.com",
     "https://b.basemaps.cartocdn.com",
@@ -38,6 +40,19 @@ class SearchListingsInput(BaseModel):
     query: str = Field(..., description="Natural-language property search query.")
     limit: int = Field(default=25, ge=1, le=100)
     offset: int = Field(default=0, ge=0)
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class GetNearbyPoisInput(BaseModel):
+    latitude: float = Field(..., description="Latitude of the location to search from.")
+    longitude: float = Field(..., description="Longitude of the location to search from.")
+    poi_type: str = Field(
+        default="transit",
+        description="Category of POI: 'transit' (bus/tram/train), 'supermarket', 'school', or 'university'.",
+    )
+    k: int = Field(default=5, ge=1, le=20, description="Number of nearest POIs to return.")
+    max_radius_m: float = Field(default=2000.0, ge=0, le=10000, description="Search radius in metres.")
 
     model_config = ConfigDict(extra="forbid")
 
@@ -108,6 +123,16 @@ def build_search_tool_result(
             if len(all_images) > 5:
                 images_text += f"\n  (+{len(all_images) - 5} more)"
             images_text += "\n"
+        poi_parts = []
+        if l.get("geo_transit_m") is not None:
+            poi_parts.append(f"transit {l['geo_transit_m']}m")
+        if l.get("geo_supermarket_m") is not None:
+            poi_parts.append(f"supermarket {l['geo_supermarket_m']}m")
+        if l.get("geo_school_m") is not None:
+            poi_parts.append(f"school {l['geo_school_m']}m")
+        if l.get("geo_university_m") is not None:
+            poi_parts.append(f"university {l['geo_university_m']}m")
+        poi_text = f"Nearby (distance): {', '.join(poi_parts)}\n" if poi_parts else ""
         lines.append(
             f"---\n"
             f"Title: {l.get('title')}\n"
@@ -119,6 +144,7 @@ def build_search_tool_result(
             f"Available: {l.get('available_from')}\n"
             f"Type: {l.get('object_category')} ({l.get('offer_type')})\n"
             f"Features: {features}\n"
+            f"{poi_text}"
             f"Description: {l.get('description', '')[:300]}\n"
             f"URL: {l.get('original_listing_url')}\n"
             f"{images_text}"
@@ -127,6 +153,47 @@ def build_search_tool_result(
         content=[types.TextContent(type="text", text="\n".join(lines))],
         structuredContent=payload,
         _meta=build_tool_result_meta(),
+    )
+
+
+def build_poi_tool_descriptor() -> types.Tool:
+    return types.Tool(
+        name=POI_TOOL_NAME,
+        title="Get nearby points of interest",
+        description=(
+            "Retrieve nearby points of interest (transit stops, supermarkets, schools, universities) "
+            "with their exact latitude/longitude coordinates and distance in metres. "
+            "Call this when the user's query shows interest in proximity to specific amenities — "
+            "e.g. 'near a school', 'close to public transport', 'walking distance to shops'. "
+            "Use the listing's latitude/longitude as input. poi_type must be one of: "
+            "transit, supermarket, school, university."
+        ),
+        inputSchema=GetNearbyPoisInput.model_json_schema(),
+        annotations=types.ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+    )
+
+
+def build_poi_tool_result(payload: dict[str, Any]) -> types.CallToolResult:
+    pois = payload.get("pois", [])
+    poi_type = payload.get("poi_type", "POI")
+    loc = payload.get("queried_location", {})
+    lines = [
+        f"Nearby {poi_type} locations for ({loc.get('latitude')}, {loc.get('longitude')}):\n"
+    ]
+    if not pois:
+        lines.append("No POIs found within the search radius.")
+    for p in pois:
+        name = p.get("name") or p.get("type") or poi_type
+        lines.append(
+            f"- {name}: lat={p['latitude']}, lng={p['longitude']}, distance={p['distance_m']}m"
+        )
+    return types.CallToolResult(
+        content=[types.TextContent(type="text", text="\n".join(lines))],
+        structuredContent=payload,
     )
 
 
@@ -171,7 +238,7 @@ mcp = FastMCP(
 
 @mcp._mcp_server.list_tools()
 async def _list_tools() -> list[types.Tool]:
-    return [build_tool_descriptor()]
+    return [build_tool_descriptor(), build_poi_tool_descriptor()]
 
 
 @mcp._mcp_server.list_resources()
@@ -211,6 +278,25 @@ async def _handle_read_resource(req: types.ReadResourceRequest) -> types.ServerR
 
 
 async def _handle_call_tool(req: types.CallToolRequest) -> types.ServerResult:
+    if req.params.name == POI_TOOL_NAME:
+        try:
+            poi_input = GetNearbyPoisInput.model_validate(req.params.arguments or {})
+        except ValidationError as exc:
+            return types.ServerResult(
+                types.CallToolResult(
+                    content=[types.TextContent(type="text", text=f"Invalid input: {exc.errors()}")],
+                    isError=True,
+                )
+            )
+        poi_payload = await get_listings_api_client().get_nearby_pois(
+            lat=poi_input.latitude,
+            lng=poi_input.longitude,
+            poi_type=poi_input.poi_type,
+            k=poi_input.k,
+            max_radius_m=poi_input.max_radius_m,
+        )
+        return types.ServerResult(build_poi_tool_result(poi_payload))
+
     if req.params.name != SEARCH_TOOL_NAME:
         return types.ServerResult(
             types.CallToolResult(

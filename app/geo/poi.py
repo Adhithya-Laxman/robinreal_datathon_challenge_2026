@@ -179,3 +179,67 @@ def compute_poi_distances(
         dist_rad, _ = tree.query(point, k=1)
         distances[poi_type] = int(dist_rad[0][0] * EARTH_RADIUS_M)
     return distances
+
+
+def load_poi_elements(cache_dir: Path, poi_type: str) -> list[dict]:
+    """Load raw Overpass elements for poi_type from the JSON cache."""
+    cache_path = cache_dir / f"overpass_{poi_type}.json"
+    if not cache_path.exists():
+        raise FileNotFoundError(f"POI cache not found: {cache_path}")
+    return json.loads(cache_path.read_text())["elements"]
+
+
+def find_nearest_pois(
+    lat: float,
+    lng: float,
+    elements: list[dict],
+    k: int = 5,
+    max_radius_m: float = 2000.0,
+) -> list[dict]:
+    """
+    Return up to k nearest POIs from elements within max_radius_m metres.
+    Each result dict has: latitude, longitude, distance_m, name, type.
+    """
+    coords: list[tuple[float, float]] = []
+    valid: list[dict] = []
+    for el in elements:
+        if el.get("type") == "node":
+            if "lat" in el and "lon" in el:
+                coords.append((el["lat"], el["lon"]))
+                valid.append(el)
+        elif "center" in el:
+            c = el["center"]
+            if "lat" in c and "lon" in c:
+                coords.append((c["lat"], c["lon"]))
+                valid.append(el)
+
+    if not coords:
+        return []
+
+    arr = np.radians(np.array(coords, dtype=float))
+    tree = BallTree(arr, metric="haversine")
+    point = np.radians([[lat, lng]])
+    actual_k = min(k, len(coords))
+    dists_rad, indices = tree.query(point, k=actual_k)
+
+    results = []
+    for dist_rad, idx in zip(dists_rad[0], indices[0]):
+        dist_m = int(dist_rad * EARTH_RADIUS_M)
+        if dist_m > max_radius_m:
+            break
+        el = valid[idx]
+        poi_lat, poi_lng = coords[idx]
+        tags = el.get("tags", {})
+        results.append({
+            "latitude": poi_lat,
+            "longitude": poi_lng,
+            "distance_m": dist_m,
+            "name": tags.get("name"),
+            "type": (
+                tags.get("amenity")
+                or tags.get("highway")
+                or tags.get("railway")
+                or tags.get("shop")
+            ),
+        })
+    return results

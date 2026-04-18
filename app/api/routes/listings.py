@@ -1,8 +1,12 @@
 from __future__ import annotations
 
-from fastapi import APIRouter
+from functools import lru_cache
+from pathlib import Path
+
+from fastapi import APIRouter, Query
 
 from app.config import get_settings
+from app.geo.poi import find_nearest_pois, load_poi_elements
 from app.harness.search_service import query_from_filters, query_from_text
 from app.models.schemas import (
     HealthResponse,
@@ -15,6 +19,14 @@ from app.models.schemas import (
 from app.participant.unified_ranker import unified_search
 
 router = APIRouter()
+
+_GEO_CACHE_DIR = Path(__file__).resolve().parents[3] / "data" / "geo"
+_VALID_POI_TYPES = {"transit", "supermarket", "school", "university"}
+
+
+@lru_cache(maxsize=None)
+def _get_poi_elements(poi_type: str) -> list[dict]:
+    return load_poi_elements(_GEO_CACHE_DIR, poi_type)
 
 
 @router.get("/health", response_model=HealthResponse)
@@ -55,9 +67,32 @@ def listings(request: ListingsQueryRequest) -> ListingsResponse:
                 offer_type=row.get("offer_type"),
                 object_category=row.get("object_category"),
                 object_type=row.get("object_type"),
+                geo_transit_m=row.get("geo_transit_m"),
+                geo_supermarket_m=row.get("geo_supermarket_m"),
+                geo_school_m=row.get("geo_school_m"),
+                geo_university_m=row.get("geo_university_m"),
             ),
         ))
     return ListingsResponse(listings=results, meta={"pipeline": "unified"})
+
+
+@router.get("/poi/nearby", response_model=dict)
+def poi_nearby(
+    lat: float = Query(..., description="Latitude of the query location"),
+    lng: float = Query(..., description="Longitude of the query location"),
+    poi_type: str = Query("transit", description="One of: transit, supermarket, school, university"),
+    k: int = Query(5, ge=1, le=20, description="Number of POIs to return"),
+    max_radius_m: float = Query(2000.0, ge=0, le=10000, description="Maximum search radius in metres"),
+) -> dict:
+    if poi_type not in _VALID_POI_TYPES:
+        return {"error": f"Unknown poi_type '{poi_type}'. Valid: {sorted(_VALID_POI_TYPES)}", "pois": []}
+    elements = _get_poi_elements(poi_type)
+    pois = find_nearest_pois(lat, lng, elements, k=k, max_radius_m=max_radius_m)
+    return {
+        "poi_type": poi_type,
+        "queried_location": {"latitude": lat, "longitude": lng},
+        "pois": pois,
+    }
 
 
 @router.post("/listings/search/filter", response_model=ListingsResponse)
