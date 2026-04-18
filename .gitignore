@@ -10,6 +10,8 @@ data/
 *.sqlite3
 
 .coverage
+.claude/
+results/
 htmlcov/
 
 apps_sdk/web/node_modules/
