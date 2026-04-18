@@ -10,15 +10,27 @@ data/
 *.sqlite3
 
 .coverage
+.claude/
+results/
 htmlcov/
 
 apps_sdk/web/node_modules/
 apps_sdk/web/dist/
 
 # AWS credentials / secrets — never commit
+aws_credentials.sh
 aws_dataset_access.sh
 .env
 .env.*
 !.env.example
 downloads/
 
+# Offline artifacts live in the docker volume, not the repo — ignore if ever
+# copied out to the worktree (e.g. by `docker compose cp`).
+/data/
+*.pkl
+listings.db
+
+# Aulia's test helper + general log rule
+test_hard_facts.sh
+logs/

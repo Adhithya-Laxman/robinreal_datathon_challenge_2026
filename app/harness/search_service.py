@@ -11,8 +11,41 @@ from app.participant.soft_fact_extraction import extract_soft_facts
 from app.participant.soft_filtering import filter_soft_facts
 
 
+_MIN_RESULTS = 5
+
+
 def filter_hard_facts(db_path: Path, hard_facts: HardFilters) -> list[dict[str, Any]]:
-    return search_listings(db_path, to_hard_filter_params(hard_facts))
+    results = search_listings(db_path, to_hard_filter_params(hard_facts))
+    if len(results) >= _MIN_RESULTS:
+        return results
+
+    # Relax constraints one by one from weakest to strongest until we get enough results
+    relaxed = hard_facts.model_copy()
+    relaxations = [
+        ("max_area", None),
+        ("min_area", None),
+        ("features", None),
+        ("radius_km", lambda v: v * 2 if v else None),
+        ("max_price", lambda v: int(v * 1.2) if v else None),
+        ("min_price", lambda v: int(v * 0.8) if v else None),
+        ("max_rooms", lambda v: v + 0.5 if v else None),
+        ("min_rooms", lambda v: max(0, v - 0.5) if v else None),
+        ("max_area", None),
+        ("city", None),
+        ("canton", None),
+    ]
+
+    for field, transform in relaxations:
+        current = getattr(relaxed, field)
+        if current is None:
+            continue
+        new_value = transform(current) if transform else None
+        setattr(relaxed, field, new_value)
+        results = search_listings(db_path, to_hard_filter_params(relaxed))
+        if len(results) >= _MIN_RESULTS:
+            return results
+
+    return results
 
 
 def query_from_text(
@@ -58,12 +91,18 @@ def to_hard_filter_params(hard_facts: HardFilters) -> HardFilterParams:
         max_price=hard_facts.max_price,
         min_rooms=hard_facts.min_rooms,
         max_rooms=hard_facts.max_rooms,
+        min_area=hard_facts.min_area,
+        max_area=hard_facts.max_area,
+        min_floor=hard_facts.min_floor,
+        max_floor=hard_facts.max_floor,
         latitude=hard_facts.latitude,
         longitude=hard_facts.longitude,
         radius_km=hard_facts.radius_km,
         features=hard_facts.features,
         offer_type=hard_facts.offer_type,
         object_category=hard_facts.object_category,
+        min_area=hard_facts.min_area,
+        max_area=hard_facts.max_area,
         limit=hard_facts.limit,
         offset=hard_facts.offset,
         sort_by=hard_facts.sort_by,

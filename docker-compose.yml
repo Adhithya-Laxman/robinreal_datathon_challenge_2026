@@ -13,9 +13,34 @@ services:
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
       AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-eu-central-2}
+      # Bedrock (workshop account) — populated from .env; leave empty to use
+      # heuristic fallback for query understanding.
+      BEDROCK_AWS_ACCESS_KEY_ID: ${BEDROCK_AWS_ACCESS_KEY_ID:-}
+      BEDROCK_AWS_SECRET_ACCESS_KEY: ${BEDROCK_AWS_SECRET_ACCESS_KEY:-}
+      BEDROCK_AWS_SESSION_TOKEN: ${BEDROCK_AWS_SESSION_TOKEN:-}
+      BEDROCK_AWS_REGION: ${BEDROCK_AWS_REGION:-us-east-1}
+      BEDROCK_QUERY_UNDERSTANDING_MODEL_ID: ${BEDROCK_QUERY_UNDERSTANDING_MODEL_ID:-anthropic.claude-sonnet-4-20250514-v1:0}
+      BEDROCK_EMBEDDING_MODEL_ID: ${BEDROCK_EMBEDDING_MODEL_ID:-cohere.embed-multilingual-v3}
+      BEDROCK_EXPLANATION_MODEL_ID: ${BEDROCK_EXPLANATION_MODEL_ID:-us.anthropic.claude-3-5-haiku-20241022-v1:0}
+      FORCE_BEDROCK_FALLBACK: ${FORCE_BEDROCK_FALLBACK:-0}
+      # Anthropic direct (fallback if Bedrock is blocked).
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      ANTHROPIC_MODEL_ID: ${ANTHROPIC_MODEL_ID:-claude-sonnet-4-20250514}
+      # Local embedding fallback.
+      USE_LOCAL_EMBEDDINGS: ${USE_LOCAL_EMBEDDINGS:-0}
+      LOCAL_EMBEDDING_MODEL: ${LOCAL_EMBEDDING_MODEL:-BAAI/bge-m3}
+      # Cache dir for fastembed model downloads (persisted in the volume).
+      FASTEMBED_CACHE_PATH: /data/fastembed_cache
     volumes:
       - listings_data:/data
       - .:/app
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]
   mcp:
     build:
       context: .

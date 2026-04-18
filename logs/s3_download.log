@@ -1,5 +1,24 @@
-[sync] s3://crawl-data-951752554117-eu-central-2-an/prod/robinreal/images/  ->  /home/adhithya-laxman/Desktop/Datathon/robinreal_datathon_challenge_2026/downloads/prod/robinreal/images/
-[sync] s3://crawl-data-951752554117-eu-central-2-an/prod/comparis/images/  ->  /home/adhithya-laxman/Desktop/Datathon/robinreal_datathon_challenge_2026/downloads/prod/comparis/images/
-[done] images under /home/adhithya-laxman/Desktop/Datathon/robinreal_datathon_challenge_2026/downloads/prod
-3.4G	/home/adhithya-laxman/Desktop/Datathon/robinreal_datathon_challenge_2026/downloads/prod/comparis/
-792M	/home/adhithya-laxman/Desktop/Datathon/robinreal_datathon_challenge_2026/downloads/prod/robinreal/
+[sync] s3://crawl-data-951752554117-eu-central-2-an/prod/robinreal/images/  ->  /Users/aulia.kharis.rakhmasari/robinreal_datathon_challenge_2026/downloads/prod/robinreal/images/
+Unable to find image 'amazon/aws-cli:latest' locally
+latest: Pulling from amazon/aws-cli
+93d23a0e3504: Pulling fs layer
+a89c93552247: Pulling fs layer
+a5842a0ff879: Pulling fs layer
+fc430115afd0: Pulling fs layer
+03d61bb308bc: Pulling fs layer
+93d23a0e3504: Download complete
+03d61bb308bc: Download complete
+a5842a0ff879: Download complete
+a89c93552247: Download complete
+a89c93552247: Pull complete
+a5842a0ff879: Pull complete
+fc430115afd0: Download complete
+93d23a0e3504: Pull complete
+03d61bb308bc: Pull complete
+fc430115afd0: Pull complete
+Digest: sha256:4611a918d72fe666b94c4436386bc857a2c765cd5ffa07faaa651330cd5f30a7
+Status: Downloaded newer image for amazon/aws-cli:latest
+[sync] s3://crawl-data-951752554117-eu-central-2-an/prod/comparis/images/  ->  /Users/aulia.kharis.rakhmasari/robinreal_datathon_challenge_2026/downloads/prod/comparis/images/
+[done] images under /Users/aulia.kharis.rakhmasari/robinreal_datathon_challenge_2026/downloads/prod
+3.3G	/Users/aulia.kharis.rakhmasari/robinreal_datathon_challenge_2026/downloads/prod/comparis/
+794M	/Users/aulia.kharis.rakhmasari/robinreal_datathon_challenge_2026/downloads/prod/robinreal/

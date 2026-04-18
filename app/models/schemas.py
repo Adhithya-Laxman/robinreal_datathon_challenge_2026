@@ -14,12 +14,22 @@ class HardFilters(BaseModel):
     max_price: int | None = Field(default=None, ge=0)
     min_rooms: float | None = Field(default=None, ge=0)
     max_rooms: float | None = Field(default=None, ge=0)
+    min_area: float | None = Field(default=None, ge=0)
+    max_area: float | None = Field(default=None, ge=0)
+    # Floor fields are accepted for forward-compat but currently no-op
+    # (no `floor` column in the listings table yet).
+    min_floor: int | None = None
+    max_floor: int | None = None
     latitude: float | None = None
     longitude: float | None = None
     radius_km: float | None = Field(default=None, ge=0)
     features: list[str] | None = None
     offer_type: str | None = None
     object_category: list[str] | None = None
+    min_area: int | None = Field(default=None, ge=0)
+    max_area: int | None = Field(default=None, ge=0)
+    min_floor: int | None = Field(default=None, ge=0)
+    max_floor: int | None = Field(default=None, ge=0)
     limit: int = Field(default=20, ge=1, le=500)
     offset: int = Field(default=0, ge=0)
     sort_by: Literal["price_asc", "price_desc", "rooms_asc", "rooms_desc"] | None = None
