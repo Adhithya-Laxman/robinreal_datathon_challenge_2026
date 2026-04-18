@@ -146,9 +146,11 @@ def _get_local_model():
         if _local_model is not None:
             return _local_model
         from fastembed import TextEmbedding
+        import onnxruntime as ort
 
         settings = get_settings()
-        providers = ["CUDAExecutionProvider", "CPUExecutionProvider"]
+        _available = ort.get_available_providers()
+        providers = [p for p in ["CUDAExecutionProvider", "CPUExecutionProvider"] if p in _available]
         logger.info(
             "Loading local embedding model %s (providers=%s, downloads on first use)...",
             settings.local_embedding_model,

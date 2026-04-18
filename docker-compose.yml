@@ -34,6 +34,7 @@ services:
     volumes:
       - listings_data:/data
       - .:/app
+      - ~/.cache/huggingface:/root/.cache/huggingface
     # GPU is opt-in via docker-compose.gpu.yml:
     #   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
     # CPU-only teammates just run `docker compose up` as usual.

@@ -87,10 +87,27 @@ def build_search_tool_result(
     query: str,
     payload: dict[str, Any],
 ) -> types.CallToolResult:
-    count = len(payload.get("listings", []))
-    summary = f"Showing {count} listing{'s' if count != 1 else ''} for “{query}”."
+    listings = payload.get("listings", [])
+    count = len(listings)
+    lines = [f"Showing {count} listing{'s' if count != 1 else ''} for \"{query}\".\n"]
+    for item in listings:
+        l = item.get("listing", {})
+        features = ", ".join(l.get("features") or []) or "none"
+        lines.append(
+            f"---\n"
+            f"Title: {l.get('title')}\n"
+            f"Score: {item.get('score', 0):.3f} ({item.get('reason', '')})\n"
+            f"Price: CHF {l.get('price_chf')}/mo\n"
+            f"Rooms: {l.get('rooms')} | Area: {l.get('living_area_sqm')} sqm\n"
+            f"Address: {l.get('street')}, {l.get('postal_code')} {l.get('city')}, {l.get('canton')}\n"
+            f"Available: {l.get('available_from')}\n"
+            f"Type: {l.get('object_category')} ({l.get('offer_type')})\n"
+            f"Features: {features}\n"
+            f"Description: {l.get('description', '')[:300]}\n"
+            f"URL: {l.get('original_listing_url')}\n"
+        )
     return types.CallToolResult(
-        content=[types.TextContent(type="text", text=summary)],
+        content=[types.TextContent(type="text", text="\n".join(lines))],
         structuredContent=payload,
         _meta=build_tool_result_meta(),
     )
