@@ -49,6 +49,7 @@ from app.models.schemas import HardFilters
 from app.participant.bm25_index import index_exists, load_index
 from app.participant.embeddings import search_by_query_text
 from app.participant.hard_fact_extraction import extract_hard_facts
+from app.participant.listing_quality import apply_post_filter
 from app.participant.query_understanding import understand
 from app.participant.schemas import QueryUnderstanding, SoftPreferences
 
@@ -318,15 +319,24 @@ def unified_search(
     stages: list[StageStatus] = []
 
     # --- Stage 1: query understanding --------------------------------------
-    hard = extract_hard_facts(query)                 # Haiku, strict JSON
-    qu = understand(query)                           # Sonnet, full QU (soft)
+    # Two independent LLM calls:
+    #   * `extract_hard_facts` → Haiku, strict-JSON schema, high-precision on
+    #     hard numeric fields.
+    #   * `understand` → Sonnet, full schema incl. soft prefs, locality_hints,
+    #     and post-processed EN "bedrooms" → Swiss "Zimmer" shift.
+    # We merge them so the hard filter sees the BEST of both: Haiku's values
+    # unless Sonnet explicitly disagrees after its bedroom-shift safety net.
+    hard = extract_hard_facts(query)
+    qu = understand(query)
     soft: SoftPreferences = qu.soft
+    _reconcile_hard_filters(hard, qu.hard, query=query, language=qu.language)
     stages.append(StageStatus(
         name="query_understanding",
         state="ok" if qu.used_llm else "empty",
         detail=f"lang={qu.language} used_llm={qu.used_llm} "
                f"descriptors={len(soft.descriptors)} "
-               f"anchors={len(soft.anchors)}",
+               f"anchors={len(soft.anchors)} "
+               f"locality_hints={soft.locality_hints or []}",
     ))
 
     # --- Stage 2: hard filter (+ relaxation) -------------------------------
@@ -353,6 +363,45 @@ def unified_search(
             candidates_before_rerank=0, weights_used={}, results=[],
             stages=stages, llm_weight_hints=dict(soft.weights),
         )
+
+    # --- Stage 2b: listing-quality post-filter ------------------------------
+    # Drop swap / wanted ads and non-Swiss listings unconditionally; drop
+    # befristet/temporary leases only when the user implied a long-term
+    # intent. See app/participant/listing_quality.py for the rule set.
+    before_quality = len(candidates)
+    candidates, quality_drops = apply_post_filter(candidates, query=query, soft=soft)
+    stages.append(StageStatus(
+        name="listing_quality",
+        state="ok" if quality_drops else "skipped",
+        detail=(f"dropped {before_quality - len(candidates)} of {before_quality}"
+                f" -> {quality_drops}" if quality_drops
+                else "no quality issues detected"),
+        scored=len(candidates),
+    ))
+    if not candidates:
+        logger.warning("Post-filter zeroed out all candidates for query=%r", query)
+        return UnifiedResponse(
+            query=query, understanding=qu, hard=hard,
+            candidates_before_rerank=0, weights_used={}, results=[],
+            stages=stages, llm_weight_hints=dict(soft.weights),
+        )
+
+    # --- Stage 2c: locality-hint soft/hard filter ---------------------------
+    # If the user named a neighborhood (Bümpliz, Oerlikon, Ouchy, ...), keep
+    # only candidates whose title/description/street mentions any hint —
+    # BUT only if doing so leaves us with a workable pool. If a strict
+    # locality filter would reduce below `min_keep`, we skip it and let
+    # the ranker (BM25 in particular) surface locality matches organically.
+    locality_detail, candidates = _apply_locality_filter(
+        candidates, soft.locality_hints,
+    )
+    if locality_detail:
+        stages.append(StageStatus(
+            name="locality_filter",
+            state="ok",
+            detail=locality_detail,
+            scored=len(candidates),
+        ))
 
     cand_ids = [str(c["listing_id"]) for c in candidates]
     rows_by_id = {str(c["listing_id"]): c for c in candidates}
@@ -861,6 +910,113 @@ def _gate_active(signal: str, soft: SoftPreferences, vlm_active: bool) -> bool:
     if signal == "price_band":
         return soft.price_intent is not None
     return True
+
+
+# --------------------------------------------------------------------------- #
+# Hard-filter reconciliation                                                   #
+# --------------------------------------------------------------------------- #
+
+
+def _reconcile_hard_filters(
+    haiku_hard: Any,
+    sonnet_hard: Any,
+    *,
+    query: str,
+    language: str,
+) -> None:
+    """Merge Sonnet's hard facts into Haiku's, *in place*.
+
+    Policy (mutates `haiku_hard`):
+      * If Haiku missed a field and Sonnet filled it in → adopt Sonnet's value.
+      * For `min_rooms` / `max_rooms` on EN queries mentioning "N bedrooms",
+        re-run the bedroom shift against Haiku's values so both extractors
+        agree on the Swiss "Zimmer" convention.
+      * Never widen a hard constraint (e.g. never raise `max_price`).
+    """
+    from app.participant.query_understanding import _apply_en_bedroom_shift
+
+    # Adopt any field Haiku left unset.
+    adoptable = (
+        "city", "canton", "postal_code", "offer_type", "object_category",
+        "features", "min_price", "max_price", "min_rooms", "max_rooms",
+        "min_area", "max_area",
+    )
+    for field in adoptable:
+        if not hasattr(haiku_hard, field) or not hasattr(sonnet_hard, field):
+            continue
+        cur = getattr(haiku_hard, field)
+        new = getattr(sonnet_hard, field)
+        missing = cur in (None, [], "")
+        if missing and new not in (None, [], ""):
+            setattr(haiku_hard, field, new)
+
+    # Apply the EN-bedroom shift to the merged result. Idempotent: if the
+    # rooms already match Swiss convention (N+1), the shift is a no-op.
+    _apply_en_bedroom_shift(query=query, language=language, hard=haiku_hard)
+
+
+# --------------------------------------------------------------------------- #
+# Locality (neighborhood) filter                                               #
+# --------------------------------------------------------------------------- #
+
+
+def _apply_locality_filter(
+    candidates: list[dict[str, Any]],
+    hints: list[str],
+    *,
+    min_keep: int = 5,
+) -> tuple[str, list[dict[str, Any]]]:
+    """Prefer candidates whose text mentions any neighborhood hint.
+
+    The LLM extracts district names (Bümpliz, Ouchy, Oerlikon, ...) into
+    `soft.locality_hints`. We use them as a *permissive* hard filter:
+
+      * If >= `min_keep` candidates contain at least one hint in their
+        title / description / street / postal_code, keep ONLY those —
+        the user was specific, we honour them.
+      * Otherwise keep everything (avoids killing recall when listings
+        genuinely don't mention the district by name; BM25/dense will
+        still surface the best semantic match).
+
+    Returns a human-readable detail string and the filtered list. Empty
+    detail means the filter was a no-op (no hints or recall safeguard
+    kicked in).
+    """
+    if not hints or not candidates:
+        return "", candidates
+
+    # Normalize hints once. Match case-insensitively against the row text.
+    hints_lc = [h.lower().strip() for h in hints if h and h.strip()]
+    if not hints_lc:
+        return "", candidates
+
+    def _row_haystack(row: dict[str, Any]) -> str:
+        parts = [
+            row.get("title") or "",
+            row.get("description") or "",
+            row.get("street") or "",
+            row.get("postal_code") or "",
+        ]
+        return " ".join(str(p) for p in parts if p).lower()
+
+    matched: list[dict[str, Any]] = []
+    for row in candidates:
+        hay = _row_haystack(row)
+        if any(h in hay for h in hints_lc):
+            matched.append(row)
+
+    if len(matched) >= min_keep:
+        return (
+            f"hints={hints_lc} kept {len(matched)}/{len(candidates)} "
+            f"(>= min_keep={min_keep})"
+        ), matched
+
+    # Recall safeguard: not enough locality matches, fall back to full pool
+    # but note in the stage detail that locality is now only a soft signal.
+    return (
+        f"hints={hints_lc} only {len(matched)}/{len(candidates)} matched "
+        f"(< min_keep={min_keep}); falling back to full pool for recall"
+    ), candidates
 
 
 # --------------------------------------------------------------------------- #

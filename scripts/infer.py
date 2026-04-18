@@ -101,40 +101,31 @@ def run_hybrid(query: str, top_k: int, alpha: float) -> list[tuple[str, float, f
 
 
 def run_pipeline(query: str, top_k: int, alpha: float) -> None:
-    from app.participant.embeddings import search_by_query_text
-    from app.participant.bm25_index import load_index
-    from app.participant.hard_fact_extraction import extract_hard_facts
-    from app.harness.search_service import filter_hard_facts
+    """Full unified pipeline: query understanding -> hard filter -> post-filters
+    -> locality filter -> weighted hybrid rerank. This is the same code path
+    the API uses, so bug-fixes in `unified_ranker.py` are exercised here."""
+    from app.participant.unified_ranker import unified_search
 
-    hard = extract_hard_facts(query)
-    print(f"\nHard filter extracted: {hard.model_dump(exclude_none=True)}")
+    resp = unified_search(query, top_k=top_k)
 
-    candidates, relaxed_fields = filter_hard_facts(get_settings().db_path, hard)
-    cand_ids = {c["listing_id"] for c in candidates}
-    relaxed_note = f" (relaxed: {relaxed_fields})" if relaxed_fields else ""
-    print(f"Candidates after hard filter{relaxed_note}: {len(cand_ids)}\n")
-    if not cand_ids:
-        print("no candidates — widen your query")
-        return
+    hard_dump = resp.hard.model_dump(exclude_none=True)
+    print(f"\nLanguage:    {resp.understanding.language}")
+    print(f"Interpretation: {resp.understanding.interpretation or '-'}")
+    print(f"Hard filter: {hard_dump}")
+    if resp.understanding.soft.locality_hints:
+        print(f"Locality hints: {resp.understanding.soft.locality_hints}")
+    print(f"Weights used: { {k: round(v, 3) for k, v in resp.weights_used.items()} }")
 
-    dense_full = dict(search_by_query_text(query, top_k=max(top_k * 4, 200),
-                                           candidate_ids=cand_ids))
-    bm25_full = {
-        lid: s for lid, s in load_index().search(query, top_k=max(top_k * 4, 200))
-        if lid in cand_ids
-    }
-    dn, bn = _normalize(dense_full), _normalize(bm25_full)
+    print("\nStages:")
+    for st in resp.stages:
+        print(f"  - {st.name:<18} {st.state:<8} {st.detail or ''}")
 
-    fused = sorted(
-        ((lid, alpha * dn.get(lid, 0.0) + (1 - alpha) * bn.get(lid, 0.0),
-          dn.get(lid, 0.0), bn.get(lid, 0.0)) for lid in cand_ids),
-        key=lambda t: -t[1],
-    )[:top_k]
-
-    rows = _fetch_listings(lid for lid, *_ in fused)
-    print(f"Top {len(fused)} after hybrid rerank (alpha={alpha}):\n")
-    for lid, fused_s, d, b in fused:
-        print(_format_row(fused_s, rows.get(lid), extras=f"(d={d:.2f} b={b:.2f})"))
+    print(f"\nTop {len(resp.results)} final results:\n")
+    ids = [r.listing_id for r in resp.results]
+    rows = _fetch_listings(ids)
+    for r in resp.results:
+        extras = f"(signals={ {k: round(v, 2) for k, v in r.score_breakdown.items()} })"
+        print(_format_row(r.score, rows.get(r.listing_id), extras=extras))
 
 
 def main() -> None:

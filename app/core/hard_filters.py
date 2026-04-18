@@ -76,7 +76,11 @@ def search_listings(db_path: Path, filters: HardFilterParams) -> list[dict[str, 
         params.extend(postal_code)
 
     if filters.canton:
-        where_clauses.append("UPPER(canton) = ?")
+        # NULL-permissive: ~22% of rows have canton=NULL in the dataset, and
+        # city is already enforced strictly above, so a NULL canton almost
+        # never means "wrong canton" — it just means the scraper didn't
+        # populate the field. Treat NULL as "unknown, keep it".
+        where_clauses.append("(UPPER(canton) = ? OR canton IS NULL)")
         params.append(filters.canton.upper())
 
     if filters.min_price is not None:
@@ -104,13 +108,22 @@ def search_listings(db_path: Path, filters: HardFilterParams) -> list[dict[str, 
         params.append(filters.max_area)
 
     if filters.offer_type:
-        where_clauses.append("UPPER(offer_type) = ?")
+        # NULL-permissive: ~4.5% of rows have offer_type=NULL. Keep them in
+        # the pool rather than silently dropping them on a missing field.
+        where_clauses.append("(UPPER(offer_type) = ? OR offer_type IS NULL)")
         params.append(filters.offer_type.upper())
 
     object_category = _normalize_list(filters.object_category)
     if object_category:
+        # NULL-permissive: ~53% of rows have object_category=NULL. Strict
+        # equality here was discarding more than half the inventory on a
+        # single LLM-extracted field. A NULL category means "unknown", not
+        # "definitely wrong category", so we keep those rows and let the
+        # downstream ranker handle any mismatch.
         placeholders = ", ".join("?" for _ in object_category)
-        where_clauses.append(f"object_category IN ({placeholders})")
+        where_clauses.append(
+            f"(object_category IN ({placeholders}) OR object_category IS NULL)"
+        )
         params.extend(object_category)
 
     features = _normalize_list(filters.features)

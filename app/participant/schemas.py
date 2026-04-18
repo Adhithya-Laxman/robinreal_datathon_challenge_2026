@@ -101,6 +101,22 @@ class SoftPreferences(BaseModel):
     # Soft availability intent: "June move-in", "ASAP", "summer".
     availability_hint: str | None = None
 
+    # Neighborhood / district / locality names the user mentioned INSIDE a
+    # city (e.g. "Bümpliz" for Bern, "Ouchy" for Lausanne, "Oerlikon" for
+    # Zürich, "Eaux-Vives" for Geneva, "Kleinbasel" for Basel). These are
+    # stored separately from `hard.city` because excluding purely on a
+    # district keyword would destroy recall for cities where descriptions
+    # don't mention the district at all. The ranker uses them as a
+    # *strong preference* (soft re-weight + BM25 boost) and only as a
+    # hard filter when at least `min_keep` candidates contain the hint.
+    locality_hints: list[str] = Field(
+        default_factory=list,
+        description=(
+            'Sub-city areas named by the user, e.g. ["Bümpliz"] or '
+            '["Oerlikon", "Schwamendingen"]. Never the main city itself.'
+        ),
+    )
+
     # Per-signal weight hint in [0, 1]. Keys are any of:
     #   "bm25", "dense_text", "clip_image", "brightness", "modernity",
     #   "geo_anchor", "transit", "feature_match", "price_band", "freshness"

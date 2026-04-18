@@ -56,6 +56,17 @@ Rules:
 - Use the canonical feature names only (balcony, elevator, parking, garage, \
   fireplace, child_friendly, pets_allowed, temporary, new_build, \
   wheelchair_accessible, private_laundry, minergie_certified).
+- CRITICAL — English "bedrooms" vs Swiss "Zimmer": Swiss listings count \
+  ALL rooms including the living room, so a typical "2-bedroom flat" in \
+  English is a "3-Zimmer Wohnung" in Switzerland. When the ENGLISH query \
+  says "N bedrooms" / "N-bedroom", set `min_rooms = N + 1` (do NOT set \
+  `max_rooms` unless the user gives a range). When the query is in DE / \
+  FR / IT and uses "Zimmer" / "pièces" / "locali", use the number directly.
+- Neighborhoods (districts / sub-city locales like Bümpliz, Ouchy, \
+  Oerlikon, Eaux-Vives, Champel, Kleinbasel, Paradiso, Massagno) go into \
+  `soft.locality_hints` — NOT into `hard.city`. `hard.city` is for the \
+  main city name (Bern, Lausanne, Zürich, Genf/Geneva, Basel, Lugano). \
+  If the user names multiple districts, list them all in locality_hints.
 - Set `language` to the query's primary language.
 - Provide `interpretation` in English as one short sentence the user would \
   recognize as "yes, that's what I meant".
@@ -116,12 +127,20 @@ def _tool_schema() -> dict[str, Any]:
                         "min_area": {
                             "type": "number",
                             "minimum": 0,
-                            "description": "Minimum living area in m². Set only when the user explicitly states a lower bound (e.g. 'at least 95 m²', 'ab 90 m²', 'almeno 80 mq').",
+                            "description": (
+                                "Minimum living area in m². Set only when the "
+                                "user explicitly states a lower bound "
+                                "(e.g. 'at least 95 m²', 'ab 90 m²', "
+                                "'almeno 80 mq')."
+                            ),
                         },
                         "max_area": {
                             "type": "number",
                             "minimum": 0,
-                            "description": "Maximum living area in m². Set only when the user explicitly states an upper bound.",
+                            "description": (
+                                "Maximum living area in m². Set only when the "
+                                "user explicitly states an upper bound."
+                            ),
                         },
                         "features": {
                             "type": "array",
@@ -182,6 +201,16 @@ def _tool_schema() -> dict[str, Any]:
                             "enum": ["cheap", "mid", "premium"],
                         },
                         "availability_hint": {"type": "string"},
+                        "locality_hints": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Sub-city areas the user named, e.g. "
+                                '["Bümpliz"], ["Oerlikon", "Schwamendingen"], '
+                                '["Ouchy", "Pully"]. Do NOT include the main '
+                                "city (it is already in hard.city)."
+                            ),
+                        },
                         "negatives": {
                             "type": "array",
                             "items": {"type": "string"},
@@ -356,14 +385,68 @@ def _assemble_understanding(
     if not soft.weights:
         soft.weights = _derive_weights_from_soft(soft)
 
+    language = tool_input.get("language", "unknown")
+
+    # Belt-and-suspenders: if the EN query said "N bedrooms" but the LLM
+    # (older prompt cache, or ambiguity) extracted N instead of N+1
+    # Zimmer, shift the room filter up by one. See the English-bedrooms
+    # rule in SYSTEM_PROMPT — this is the post-process safety net.
+    _apply_en_bedroom_shift(query=query, language=language, hard=hard)
+
     return QueryUnderstanding(
         raw_query=query,
-        language=tool_input.get("language", "unknown"),
+        language=language,
         hard=hard,
         soft=soft,
         used_llm=used_llm,
         interpretation=tool_input.get("interpretation"),
     )
+
+
+# Matches explicit English "N bedroom(s)" / "N-bedroom" phrasing.
+# Deliberately strict: requires "bedroom" as a whole word, not just "room".
+_EN_BEDROOM_PATTERN = re.compile(
+    r"(\d(?:[.,]\d)?)\s*[- ]?\s*bedroom", re.IGNORECASE,
+)
+
+
+def _apply_en_bedroom_shift(
+    *, query: str, language: str, hard: HardFilters,
+) -> None:
+    """For English queries, translate "N bedrooms" -> Swiss N+1 Zimmer.
+
+    Mutates `hard` in place. Only fires when:
+      * language == 'en'
+      * the raw query contains the literal word "bedroom"
+      * the LLM's `min_rooms` looks like it matched the bedroom number
+        directly (i.e. equals the detected bedroom count). If the LLM
+        already added +1 (correct behaviour from the updated prompt),
+        we detect that and leave it alone.
+    """
+    if language != "en":
+        return
+    m = _EN_BEDROOM_PATTERN.search(query or "")
+    if not m:
+        return
+    try:
+        bedrooms = float(m.group(1).replace(",", "."))
+    except ValueError:
+        return
+
+    target_min = bedrooms + 1.0
+    # Only shift if the LLM's min_rooms is either missing or equal to the
+    # bedroom count (meaning it didn't translate). Never shift past what
+    # the user asked for.
+    if hard.min_rooms is None or abs(hard.min_rooms - bedrooms) < 0.01:
+        logger.info(
+            "[qu] EN bedroom shift: raw=%s bedrooms, min_rooms %s -> %s",
+            bedrooms, hard.min_rooms, target_min,
+        )
+        hard.min_rooms = target_min
+        # If the LLM also set max_rooms == bedrooms (equally under-
+        # counted), shift it too, else leave it as a user-provided range.
+        if hard.max_rooms is not None and abs(hard.max_rooms - bedrooms) < 0.01:
+            hard.max_rooms = target_min + 0.5
 
 
 def _derive_weights_from_soft(soft: SoftPreferences) -> dict[str, float]:
@@ -563,6 +646,19 @@ def _heuristic_understand(query: str) -> QueryUnderstanding:
     anchor_matches = _NEAR_PATTERN.findall(query)
     if anchor_matches:
         soft.anchors = [Anchor(text=a.strip(" ,.")) for a in anchor_matches]
+
+    # Belt-and-suspenders in the heuristic path too: if the query is in
+    # English and mentions "N bedroom(s)", shift min_rooms to N+1.
+    if _EN_BEDROOM_PATTERN.search(query):
+        bm = _EN_BEDROOM_PATTERN.search(query)
+        try:
+            bedrooms = float(bm.group(1).replace(",", "."))  # type: ignore[union-attr]
+            if hard.min_rooms is None or abs(hard.min_rooms - bedrooms) < 0.01:
+                hard.min_rooms = bedrooms + 1.0
+                if hard.max_rooms is not None and abs(hard.max_rooms - bedrooms) < 0.01:
+                    hard.max_rooms = bedrooms + 1.5
+        except (ValueError, AttributeError):
+            pass
 
     # Rough weight hints so the ranker still has something to work with.
     weights: dict[str, float] = {
