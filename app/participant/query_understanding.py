@@ -113,6 +113,16 @@ def _tool_schema() -> dict[str, Any]:
                         "max_price": {"type": "integer", "minimum": 0},
                         "min_rooms": {"type": "number", "minimum": 0},
                         "max_rooms": {"type": "number", "minimum": 0},
+                        "min_area": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Minimum living area in m². Set only when the user explicitly states a lower bound (e.g. 'at least 95 m²', 'ab 90 m²', 'almeno 80 mq').",
+                        },
+                        "max_area": {
+                            "type": "number",
+                            "minimum": 0,
+                            "description": "Maximum living area in m². Set only when the user explicitly states an upper bound.",
+                        },
                         "features": {
                             "type": "array",
                             "items": {"type": "string", "enum": list(FEATURE_NAMES)},
@@ -472,6 +482,15 @@ _ROOMS_PATTERN = re.compile(
     r"(\d(?:[.,]\d)?)\s*[- ]?\s*(?:room|rooms|zimmer|zi\.?|pièces|locali)",
     re.IGNORECASE,
 )
+# Only set min_area when there is an explicit lower-bound qualifier.
+_MIN_AREA_PATTERN = re.compile(
+    r"(?:mindestens|at least|minimum|min(?:imo)?|au moins|almeno|ab|von)\s+(\d{2,3})\s*(?:m[²2]|sqm|m2|mq)",
+    re.IGNORECASE,
+)
+_MAX_AREA_PATTERN = re.compile(
+    r"(?:h[öo]chstens|at most|maximum|max(?:imo)?|au plus|al massimo|bis zu|jusqu['\u2019]à)\s+(\d{2,3})\s*(?:m[²2]|sqm|m2|mq)",
+    re.IGNORECASE,
+)
 
 
 def _heuristic_understand(query: str) -> QueryUnderstanding:
@@ -498,6 +517,18 @@ def _heuristic_understand(query: str) -> QueryUnderstanding:
     if (m := _ROOMS_PATTERN.search(query)):
         try:
             hard.min_rooms = float(m.group(1).replace(",", "."))
+        except ValueError:
+            pass
+
+    if (m := _MIN_AREA_PATTERN.search(query)):
+        try:
+            hard.min_area = int(m.group(1))
+        except ValueError:
+            pass
+
+    if (m := _MAX_AREA_PATTERN.search(query)):
+        try:
+            hard.max_area = int(m.group(1))
         except ValueError:
             pass
 
