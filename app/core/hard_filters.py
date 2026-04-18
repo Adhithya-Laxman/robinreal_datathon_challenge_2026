@@ -31,6 +31,8 @@ class HardFilterParams:
     features: list[str] | None = None
     offer_type: str | None = None
     object_category: list[str] | None = None
+    min_area: int | None = None
+    max_area: int | None = None
     limit: int = 20
     offset: int = 0
     sort_by: str | None = None

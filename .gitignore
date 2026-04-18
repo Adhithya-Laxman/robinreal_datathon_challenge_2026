@@ -14,7 +14,7 @@ htmlcov/
 
 apps_sdk/web/node_modules/
 apps_sdk/web/dist/
-aws_credentials.sh
+
 # AWS credentials / secrets — never commit
 aws_credentials.sh
 aws_dataset_access.sh
@@ -29,3 +29,6 @@ downloads/
 *.pkl
 listings.db
 
+# Aulia's test helper + general log rule
+test_hard_facts.sh
+logs/
