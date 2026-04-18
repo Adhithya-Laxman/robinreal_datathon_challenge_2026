@@ -3,7 +3,7 @@
 .pytest_cache/
 __pycache__/
 *.pyc
-
+raw_data/
 data/
 *.db
 *.sqlite
@@ -14,3 +14,11 @@ htmlcov/
 
 apps_sdk/web/node_modules/
 apps_sdk/web/dist/
+
+# AWS credentials / secrets — never commit
+aws_dataset_access.sh
+.env
+.env.*
+!.env.example
+downloads/
+

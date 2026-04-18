@@ -7,6 +7,12 @@ services:
     environment:
       LISTINGS_RAW_DATA_DIR: /app/raw_data
       LISTINGS_DB_PATH: /data/listings.db
+      LISTINGS_S3_BUCKET: ${LISTINGS_S3_BUCKET:-crawl-data-951752554117-eu-central-2-an}
+      LISTINGS_S3_REGION: ${LISTINGS_S3_REGION:-eu-central-2}
+      LISTINGS_S3_PREFIX: ${LISTINGS_S3_PREFIX:-prod}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-eu-central-2}
     volumes:
       - listings_data:/data
       - .:/app

@@ -1,0 +1,5 @@
+[sync] s3://crawl-data-951752554117-eu-central-2-an/prod/robinreal/images/  ->  /home/adhithya-laxman/Desktop/Datathon/robinreal_datathon_challenge_2026/downloads/prod/robinreal/images/
+[sync] s3://crawl-data-951752554117-eu-central-2-an/prod/comparis/images/  ->  /home/adhithya-laxman/Desktop/Datathon/robinreal_datathon_challenge_2026/downloads/prod/comparis/images/
+[done] images under /home/adhithya-laxman/Desktop/Datathon/robinreal_datathon_challenge_2026/downloads/prod
+3.4G	/home/adhithya-laxman/Desktop/Datathon/robinreal_datathon_challenge_2026/downloads/prod/comparis/
+792M	/home/adhithya-laxman/Desktop/Datathon/robinreal_datathon_challenge_2026/downloads/prod/robinreal/
