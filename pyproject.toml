@@ -7,8 +7,6 @@ dependencies = [
     "anthropic>=0.40.0,<1.0.0",
     "boto3>=1.39.0,<2.0.0",
     "fastapi>=0.115.0,<1.0.0",
-    "fastembed-gpu>=0.4.0,<1.0.0; sys_platform == 'linux'",
-    "fastembed>=0.4.0,<1.0.0; sys_platform == 'darwin'",
     "httpx>=0.28.0,<1.0.0",
     "mcp>=1.25.0",
     "numpy>=2.4.4,<3.0.0",
@@ -24,6 +22,14 @@ dependencies = [
     "transformers>=5.5.4",
     "uvicorn[standard]>=0.32.0,<1.0.0",
 ]
+
+# fastembed and fastembed-gpu share the same `fastembed` import and cannot
+# coexist, so pick exactly one via an extra:
+#   CPU: pip install ".[cpu]"    (default in Dockerfile)
+#   GPU: pip install ".[gpu]"    (activated by docker-compose.gpu.yml)
+[project.optional-dependencies]
+cpu = ["fastembed>=0.4.0,<1.0.0"]
+gpu = ["fastembed-gpu>=0.4.0,<1.0.0"]
 
 [dependency-groups]
 dev = [

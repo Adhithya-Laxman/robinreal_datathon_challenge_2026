@@ -14,9 +14,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 WORKDIR /app
 
+# Controls which fastembed variant gets installed:
+#   cpu -> fastembed (CPU-only onnxruntime, works everywhere)
+#   gpu -> fastembed-gpu (requires CUDA; enabled via docker-compose.gpu.yml)
+ARG FASTEMBED_EXTRA=cpu
+
 COPY pyproject.toml ./
 RUN pip install --break-system-packages --no-cache-dir uv \
-    && uv pip install --system --break-system-packages .
+    && uv pip install --system --break-system-packages ".[${FASTEMBED_EXTRA}]"
 
 COPY app ./app
 COPY apps_sdk ./apps_sdk

@@ -1,9 +1,13 @@
 # GPU override. Use with:
-#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up
+#   docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
 # Requires nvidia-container-toolkit installed on the host and Docker configured
 # with the nvidia runtime.
 services:
   api:
+    build:
+      context: .
+      args:
+        FASTEMBED_EXTRA: gpu
     deploy:
       resources:
         reservations:
