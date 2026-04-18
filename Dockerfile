@@ -25,7 +25,7 @@ RUN pip install --break-system-packages --no-cache-dir uv \
 
 COPY app ./app
 COPY apps_sdk ./apps_sdk
-COPY raw_data ./raw_data
+RUN mkdir -p /app/raw_data
 COPY README.md ./
 
 ENV LISTINGS_RAW_DATA_DIR=/app/raw_data \

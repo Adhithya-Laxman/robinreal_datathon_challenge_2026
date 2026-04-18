@@ -13,6 +13,7 @@ data/
 .claude/
 results/
 htmlcov/
+features_vlm/
 
 apps_sdk/web/node_modules/
 apps_sdk/web/dist/
