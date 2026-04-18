@@ -1,9 +1,40 @@
 services:
+  # One-shot service that hydrates /data and /app/features_vlm from S3 before
+  # the app starts. Skips files that already exist unless BOOTSTRAP_FORCE=1.
+  # Teammates just do `docker compose up`; no manual artifact download needed.
+  #
+  # What gets synced by default:
+  #   listings.db, bm25.pkl, geo/overpass_*.json, features_vlm/siglip2/*.npz
+  #
+  # Raw images (~30k files, ~4 GB) are OPT-IN via BOOTSTRAP_INCLUDE_IMAGES=1,
+  # because the ranking pipeline doesn't need them at inference — the
+  # pre-computed SigLIP2 shards already encode their visual content. Enable
+  # only if you want to re-embed images or inspect them locally.
+  bootstrap:
+    image: amazon/aws-cli:2.15.0
+    entrypoint: ["/bin/bash", "/app/scripts/bootstrap_from_s3.sh"]
+    environment:
+      ARTIFACTS_S3_BUCKET: ${ARTIFACTS_S3_BUCKET:-datathon-robinreal-085455950306-us-west-2}
+      ARTIFACTS_S3_REGION: ${ARTIFACTS_S3_REGION:-us-west-2}
+      BOOTSTRAP_INCLUDE_IMAGES: ${BOOTSTRAP_INCLUDE_IMAGES:-0}
+      BOOTSTRAP_FORCE: ${BOOTSTRAP_FORCE:-0}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-west-2}
+    volumes:
+      - listings_data:/data
+      - .:/app
+    restart: "no"
+
   api:
     build:
       context: .
     ports:
       - "8000:8000"
+    depends_on:
+      bootstrap:
+        condition: service_completed_successfully
     environment:
       LISTINGS_RAW_DATA_DIR: /app/raw_data
       LISTINGS_DB_PATH: /data/listings.db
@@ -49,7 +80,10 @@ services:
     ports:
       - "8001:8001"
     depends_on:
-      - api
+      bootstrap:
+        condition: service_completed_successfully
+      api:
+        condition: service_started
     volumes:
       - .:/app
 
