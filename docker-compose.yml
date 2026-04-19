@@ -76,7 +76,7 @@ services:
     command: uvicorn apps_sdk.server.main:app --host 0.0.0.0 --port 8001
     environment:
       APPS_SDK_LISTINGS_API_BASE_URL: http://api:8000
-      APPS_SDK_PUBLIC_BASE_URL: http://localhost:8001
+      APPS_SDK_PUBLIC_BASE_URL: ${APPS_SDK_PUBLIC_BASE_URL:-http://localhost:8001}
       APPS_SDK_PORT: 8001
       RESULTS_DIR: /results
     ports:
