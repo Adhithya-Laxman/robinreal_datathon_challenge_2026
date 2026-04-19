@@ -46,6 +46,7 @@ def listings(request: ListingsQueryRequest) -> ListingsResponse:
             listing_id=r.listing_id,
             score=r.score,
             reason=reason,
+            signals={k: round(v, 4) for k, v in r.signals.items() if v > 0},
             listing=ListingData(
                 id=r.listing_id,
                 title=row.get("title") or "",

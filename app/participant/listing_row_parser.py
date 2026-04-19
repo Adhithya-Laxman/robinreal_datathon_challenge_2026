@@ -1,8 +1,37 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import date
 from typing import Any
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+_MULTI_SPACE_RE = re.compile(r"[ \t]{2,}")
+
+# Matches "3.5 Zimmer", "3.5-Zimmer", "3 pièces", "3 locali", "3-room", etc.
+_ROOMS_RE = re.compile(
+    r"(\d+(?:[.,]5)?)\s*[-\u2011]?\s*"
+    r"(?:Zimmer|Zi\.|pi[eè]ces?|locali?|rooms?)",
+    re.IGNORECASE,
+)
+
+
+def infer_rooms_from_title(title: str | None) -> float | None:
+    """Extract room count from listing title when the rooms field is missing."""
+    if not title:
+        return None
+    m = _ROOMS_RE.search(title)
+    if m:
+        return float(m.group(1).replace(",", "."))
+    return None
+
+
+def _strip_markup(text: str) -> str:
+    """Remove HTML tags and markdown bold/italic markers from listing text."""
+    text = _HTML_TAG_RE.sub(" ", text)
+    text = text.replace("**", "").replace("*", "")
+    text = _MULTI_SPACE_RE.sub(" ", text)
+    return text.strip()
 
 
 def _clean_text(value: str | None) -> str | None:
@@ -254,7 +283,8 @@ def prepare_listing_row(row: dict[str, str]) -> tuple[Any, ...]:
     canton = _clean_text(row.get("object_state")) or _clean_text(location.get("canton"))
     canton = canton.upper() if canton else None
     title = _clean_text(row.get("title")) or "Untitled listing"
-    description = _clean_text(row.get("object_description")) or _clean_text(row.get("remarks"))
+    raw_desc = _clean_text(row.get("object_description")) or _clean_text(row.get("remarks"))
+    description = _strip_markup(raw_desc) if raw_desc else None
     offer_type = _clean_text(row.get("offer_type"))
     offer_type = offer_type.upper() if offer_type else None
     orig_data = _parse_json_object(row.get("orig_data"))
@@ -281,7 +311,7 @@ def prepare_listing_row(row: dict[str, str]) -> tuple[Any, ...]:
         postal_code,
         canton,
         _derive_price(row),
-        _parse_float(row.get("number_of_rooms")),
+        _parse_float(row.get("number_of_rooms")) or infer_rooms_from_title(_clean_text(row.get("title"))),
         _parse_float(row.get("area")),
         _parse_date(row.get("available_from")),
         _parse_float(row.get("geo_lat")),

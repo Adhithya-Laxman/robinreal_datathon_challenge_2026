@@ -61,10 +61,40 @@ _STOPWORDS: frozenset[str] = frozenset(
 
 _TOKEN_RE = re.compile(r"[\w\u00C0-\u024F]+", re.UNICODE)
 
+# Language-keyword sets used for heuristic detection (see detect_lang).
+_LANG_KEYWORDS: dict[str, frozenset[str]] = {
+    "de": frozenset(["der", "die", "das", "und", "mit", "ist", "eine", "nicht", "für", "bei", "im", "am", "zum"]),
+    "fr": frozenset(["les", "des", "pour", "dans", "avec", "est", "qui", "une", "sur", "pas", "par", "du", "au"]),
+    "it": frozenset(["con", "nel", "per", "del", "della", "sono", "una", "gli", "che", "dal", "alle", "dei", "si"]),
+    "en": frozenset(["the", "and", "for", "with", "this", "that", "are", "not", "from", "have", "apartment", "rent"]),
+}
+_LANG_CHARS: dict[str, frozenset[str]] = {
+    "de": frozenset("äöüß"),
+    "fr": frozenset("éèêëàâùûîôçœ"),
+    "it": frozenset("àèìîòùú"),
+}
+
 # Single stemmer instance reused across threads — snowballstemmer stemmers
 # are not documented as thread-safe, so we guard with a lock.
 _stemmer = snowballstemmer.stemmer("german")
 _stemmer_lock = threading.Lock()
+
+
+def detect_lang(text: str) -> str:
+    """Heuristic language detection (de/fr/it/en) without external libraries.
+
+    Uses character markers and common-word frequency. Defaults to 'de'
+    (most common in Swiss listings) when ambiguous.
+    """
+    lower = text.lower()
+    words = frozenset(_TOKEN_RE.findall(lower))
+    word_scores = {lang: len(words & kws) for lang, kws in _LANG_KEYWORDS.items()}
+    char_scores = {lang: sum(lower.count(c) for c in chars)
+                   for lang, chars in _LANG_CHARS.items()}
+    total = {lang: word_scores[lang] * 3 + char_scores.get(lang, 0)
+             for lang in _LANG_KEYWORDS}
+    best = max(total, key=total.get)
+    return best if total[best] > 0 else "de"
 
 
 def tokenize(text: str) -> list[str]:
