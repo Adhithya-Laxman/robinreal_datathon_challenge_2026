@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Any
@@ -11,8 +12,9 @@ import mcp.types as types
 from mcp.server.fastmcp import FastMCP
 from mcp.server.transport_security import TransportSecuritySettings
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-from starlette.responses import Response
+from starlette.responses import HTMLResponse, Response
 from starlette.staticfiles import StaticFiles
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from apps_sdk.server.client import get_listings_api_client
 from apps_sdk.server.widget import (
@@ -25,7 +27,11 @@ from apps_sdk.server.widget import (
 
 SEARCH_TOOL_NAME = "search_listings"
 POI_TOOL_NAME = "get_nearby_pois"
+VIEWER_TOOL_NAME = "open_results_page"
 _VALID_POI_TYPES = ["transit", "supermarket", "school", "university"]
+
+# In-memory session store: session_id → {query, payload}
+_results_store: dict[str, dict[str, Any]] = {}
 MAP_RESOURCE_ORIGINS = [
     "https://a.basemaps.cartocdn.com",
     "https://b.basemaps.cartocdn.com",
@@ -53,6 +59,14 @@ class GetNearbyPoisInput(BaseModel):
     )
     k: int = Field(default=5, ge=1, le=20, description="Number of nearest POIs to return.")
     max_radius_m: float = Field(default=2000.0, ge=0, le=10000, description="Search radius in metres.")
+
+    model_config = ConfigDict(extra="forbid")
+
+
+class OpenResultsPageInput(BaseModel):
+    query: str = Field(..., description="Natural-language property search query.")
+    limit: int = Field(default=25, ge=1, le=100)
+    offset: int = Field(default=0, ge=0)
 
     model_config = ConfigDict(extra="forbid")
 
@@ -185,6 +199,44 @@ def build_poi_tool_descriptor() -> types.Tool:
     )
 
 
+def build_viewer_tool_descriptor() -> types.Tool:
+    return types.Tool(
+        name=VIEWER_TOOL_NAME,
+        title="Open results page",
+        description=(
+            "Search Swiss real-estate listings and open a beautiful standalone web results page "
+            "the user can view in their browser. Returns a URL that shows an interactive map and "
+            "ranked listing cards — no Claude or ChatGPT UI required. "
+            "Call this when the user asks to 'show results on a page', 'open a viewer', "
+            "'see results in the browser', or wants a shareable visual overview."
+        ),
+        inputSchema=OpenResultsPageInput.model_json_schema(),
+        annotations=types.ToolAnnotations(
+            readOnlyHint=True,
+            destructiveHint=False,
+            openWorldHint=False,
+        ),
+    )
+
+
+def build_viewer_tool_result(*, query: str, session_id: str, count: int, base_url: str) -> types.CallToolResult:
+    viewer_url = f"{base_url}/view/{session_id}"
+    return types.CallToolResult(
+        content=[
+            types.TextContent(
+                type="text",
+                text=(
+                    f"Results viewer ready — open the link below in your browser:\n\n"
+                    f"{viewer_url}\n\n"
+                    f"Found {count} listing{'s' if count != 1 else ''} for \"{query}\". "
+                    f"The page shows an interactive map with numbered pins and ranked listing cards "
+                    f"with images, prices, scores, and direct links to each property."
+                ),
+            )
+        ],
+    )
+
+
 def build_poi_tool_result(payload: dict[str, Any]) -> types.CallToolResult:
     pois = payload.get("pois", [])
     poi_type = payload.get("poi_type", "POI")
@@ -246,7 +298,7 @@ mcp = FastMCP(
 
 @mcp._mcp_server.list_tools()
 async def _list_tools() -> list[types.Tool]:
-    return [build_tool_descriptor(), build_poi_tool_descriptor()]
+    return [build_tool_descriptor(), build_poi_tool_descriptor(), build_viewer_tool_descriptor()]
 
 
 
@@ -262,6 +314,25 @@ async def _list_resources() -> list[types.Resource]:
             _meta=build_resource_contents_meta(),
         )
     ]
+
+
+async def _make_viewer_response(session_id: str) -> HTMLResponse:
+    session = _results_store.get(session_id)
+    if not session:
+        return HTMLResponse(
+            "<html><body style='font-family:sans-serif;padding:48px;color:#6b7280'>"
+            "<h2 style='color:#111827'>Session not found</h2>"
+            "<p>This link may have expired or is invalid.</p></body></html>",
+            status_code=404,
+        )
+    template_path = Path(__file__).parent / "viewer.html"
+    template = template_path.read_text(encoding="utf-8")
+    data_json = json.dumps(
+        {"query": session["query"], "listings": session["payload"].get("listings", [])},
+        ensure_ascii=False,
+    ).replace("</", "<\\/")  # prevent </script> injection
+    html = template.replace("__DATA_JSON__", data_json)
+    return HTMLResponse(html)
 
 
 async def _handle_read_resource(req: types.ReadResourceRequest) -> types.ServerResult:
@@ -305,6 +376,33 @@ async def _handle_call_tool(req: types.CallToolRequest) -> types.ServerResult:
             max_radius_m=poi_input.max_radius_m,
         )
         return types.ServerResult(build_poi_tool_result(poi_payload))
+
+    if req.params.name == VIEWER_TOOL_NAME:
+        try:
+            viewer_input = OpenResultsPageInput.model_validate(req.params.arguments or {})
+        except ValidationError as exc:
+            return types.ServerResult(
+                types.CallToolResult(
+                    content=[types.TextContent(type="text", text=f"Invalid input: {exc.errors()}")],
+                    isError=True,
+                )
+            )
+        response_payload = await get_listings_api_client().search_listings(
+            query=viewer_input.query,
+            limit=viewer_input.limit,
+            offset=viewer_input.offset,
+        )
+        session_id = str(uuid.uuid4())
+        _results_store[session_id] = {"query": viewer_input.query, "payload": response_payload}
+        count = len(response_payload.get("listings", []))
+        return types.ServerResult(
+            build_viewer_tool_result(
+                query=viewer_input.query,
+                session_id=session_id,
+                count=count,
+                base_url=get_public_base_url(),
+            )
+        )
 
     if req.params.name != SEARCH_TOOL_NAME:
         return types.ServerResult(
@@ -350,14 +448,33 @@ def _save_results(*, query: str, payload: dict[str, Any]) -> None:
 mcp._mcp_server.request_handlers[types.ReadResourceRequest] = _handle_read_resource
 mcp._mcp_server.request_handlers[types.CallToolRequest] = _handle_call_tool
 
-app = mcp.streamable_http_app()
+_mcp_app = mcp.streamable_http_app()
 _widget_dist_dir = get_widget_dist_dir()
 _widget_dist_dir.mkdir(parents=True, exist_ok=True)
-app.mount(
+_mcp_app.mount(
     "/widget-assets",
     PublicWidgetStaticFiles(directory=str(_widget_dist_dir)),
     name="widget-assets",
 )
+
+class _ViewerMiddleware:
+    """Intercepts /view/<id> requests; passes everything else (incl. lifespan) to the MCP app."""
+
+    __slots__ = ("_app",)
+
+    def __init__(self, app: ASGIApp) -> None:
+        self._app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope.get("path", "").startswith("/view/"):
+            session_id = scope["path"][len("/view/"):]
+            response = await _make_viewer_response(session_id)
+            await response(scope, receive, send)
+        else:
+            await self._app(scope, receive, send)
+
+
+app = _ViewerMiddleware(_mcp_app)
 
 
 if __name__ == "__main__":
