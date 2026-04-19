@@ -38,12 +38,13 @@ services:
     environment:
       LISTINGS_RAW_DATA_DIR: /app/raw_data
       LISTINGS_DB_PATH: /data/listings.db
-      LISTINGS_S3_BUCKET: ${LISTINGS_S3_BUCKET:-crawl-data-951752554117-eu-central-2-an}
-      LISTINGS_S3_REGION: ${LISTINGS_S3_REGION:-eu-central-2}
-      LISTINGS_S3_PREFIX: ${LISTINGS_S3_PREFIX:-prod}
+      LISTINGS_S3_BUCKET: ${LISTINGS_S3_BUCKET:-datathon-robinreal-085455950306-us-west-2}
+      LISTINGS_S3_REGION: ${LISTINGS_S3_REGION:-us-west-2}
+      LISTINGS_S3_PREFIX: ${LISTINGS_S3_PREFIX:-raw/downloads/prod}
       AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
       AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
-      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-eu-central-2}
+      AWS_SESSION_TOKEN: ${AWS_SESSION_TOKEN:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-us-west-2}
       # Bedrock (workshop account) — populated from .env; leave empty to use
       # heuristic fallback for query understanding.
       BEDROCK_AWS_ACCESS_KEY_ID: ${BEDROCK_AWS_ACCESS_KEY_ID:-}

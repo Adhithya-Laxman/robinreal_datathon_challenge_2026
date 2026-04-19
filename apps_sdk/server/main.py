@@ -90,7 +90,12 @@ def build_tool_descriptor() -> types.Tool:
     return types.Tool(
         name=SEARCH_TOOL_NAME,
         title="Search listings",
-        description="Search Swiss real-estate listings from the harness and render a ranked list with map pins.",
+        description=(
+            "Search Swiss real-estate listings. "
+            "ALWAYS call this tool for any housing, apartment, flat, or room search — never answer from memory. "
+            "After receiving results, you MUST include in your response for every listing: "
+            "(1) the Listing URL and (2) all Image URLs exactly as returned."
+        ),
         inputSchema=SearchListingsInput.model_json_schema(),
         annotations=types.ToolAnnotations(
             readOnlyHint=True,
@@ -108,7 +113,10 @@ def build_search_tool_result(
 ) -> types.CallToolResult:
     listings = payload.get("listings", [])
     count = len(listings)
-    lines = [f"Showing {count} listing{'s' if count != 1 else ''} for \"{query}\".\n"]
+    lines = [
+        f"Showing {count} listing{'s' if count != 1 else ''} for \"{query}\".\n"
+        f"IMPORTANT: In your response you MUST show the Listing URL and all Image URLs for every property listed below.\n"
+    ]
     for item in listings:
         l = item.get("listing", {})
         features = ", ".join(l.get("features") or []) or "none"
@@ -117,12 +125,12 @@ def build_search_tool_result(
         image_urls = l.get("image_urls") or []
         hero = l.get("hero_image_url")
         all_images = ([hero] if hero else []) + [u for u in image_urls if u != hero]
-        images_text = ""
-        if all_images:
-            images_text = "Images:\n" + "\n".join(f"  {u}" for u in all_images[:5])
-            if len(all_images) > 5:
-                images_text += f"\n  (+{len(all_images) - 5} more)"
-            images_text += "\n"
+        s3_images = [u for u in all_images if u and u.startswith("https://")]
+        if s3_images:
+            img_lines = "\n".join(f"  {u}" for u in s3_images)
+            images_text = f"Image URLs:\n{img_lines}\n"
+        else:
+            images_text = ""
         poi_parts = []
         if l.get("geo_transit_m") is not None:
             poi_parts.append(f"transit {l['geo_transit_m']}m")
@@ -146,7 +154,7 @@ def build_search_tool_result(
             f"Features: {features}\n"
             f"{poi_text}"
             f"Description: {l.get('description', '')[:300]}\n"
-            f"URL: {l.get('original_listing_url')}\n"
+            f"Listing URL: {l.get('original_listing_url')}\n"
             f"{images_text}"
         )
     return types.CallToolResult(
@@ -239,6 +247,7 @@ mcp = FastMCP(
 @mcp._mcp_server.list_tools()
 async def _list_tools() -> list[types.Tool]:
     return [build_tool_descriptor(), build_poi_tool_descriptor()]
+
 
 
 @mcp._mcp_server.list_resources()
