@@ -46,6 +46,7 @@ def load_widget_html(*, dist_dir: Path, public_base_url: str) -> str:
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
     <title>{WIDGET_TITLE}</title>
     {css_links}
   </head>

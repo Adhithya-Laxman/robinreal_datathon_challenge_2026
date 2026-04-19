@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import RankedList from "./components/RankedList";
+import ResultsImageStrip from "./components/ResultsImageStrip";
 import ListingsMap from "./components/ListingsMap";
 
 type ListingData = {
@@ -125,6 +126,11 @@ export default function App() {
               : "No results yet"}
           </p>
         </div>
+        <ResultsImageStrip
+          results={results}
+          selectedId={selectedId}
+          onSelect={setSelectedId}
+        />
         <RankedList
           results={results}
           selectedId={selectedId}

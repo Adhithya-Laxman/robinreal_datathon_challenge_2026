@@ -35,3 +35,9 @@ listings.db
 # Aulia's test helper + general log rule
 test_hard_facts.sh
 logs/
+
+# Local Hugging Face cache (multi-GB; set HF_HOME here in dev)
+.hf_cache/
+
+# Cursor IDE local state (optional: keep .cursor/rules/ tracked by removing this)
+.cursor/

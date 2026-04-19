@@ -50,6 +50,7 @@ export default function RankedList({
 }: RankedListProps) {
   const [imageIndexes, setImageIndexes] = useState<Record<string, number>>({});
   const touchStartXRef = useRef<Record<string, number>>({});
+  const imageErrorAttemptsRef = useRef<Record<string, number>>({});
 
   if (!results.length) {
     return (
@@ -75,11 +76,34 @@ export default function RankedList({
           if (imageUrls.length <= 1) {
             return;
           }
+          imageErrorAttemptsRef.current[result.listing_id] = 0;
           setImageIndexes((current) => {
             const currentIndex = current[result.listing_id] ?? 0;
             const nextIndex = (currentIndex + delta + imageUrls.length) % imageUrls.length;
             return { ...current, [result.listing_id]: nextIndex };
           });
+        };
+
+        const onImageError = () => {
+          if (imageUrls.length <= 1) {
+            return;
+          }
+          const id = result.listing_id;
+          const prev = imageErrorAttemptsRef.current[id] ?? 0;
+          const nextAttempt = prev + 1;
+          if (nextAttempt >= imageUrls.length) {
+            return;
+          }
+          imageErrorAttemptsRef.current[id] = nextAttempt;
+          setImageIndexes((current) => {
+            const currentIndex = current[result.listing_id] ?? 0;
+            const nextIndex = (currentIndex + 1) % imageUrls.length;
+            return { ...current, [result.listing_id]: nextIndex };
+          });
+        };
+
+        const onImageLoad = () => {
+          imageErrorAttemptsRef.current[result.listing_id] = 0;
         };
 
         return (
@@ -132,6 +156,9 @@ export default function RankedList({
                   src={activeImageUrl}
                   alt={listing.title}
                   loading="lazy"
+                  referrerPolicy="no-referrer"
+                  onLoad={onImageLoad}
+                  onError={onImageError}
                   onTouchEnd={(event) => {
                     const startX = touchStartXRef.current[result.listing_id];
                     if (startX == null) {

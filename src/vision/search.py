@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import os
 import re
 import shutil
 from pathlib import Path
@@ -9,6 +11,76 @@ import numpy as np
 import torch
 from PIL import Image
 from transformers import AutoModel, AutoProcessor
+
+logger = logging.getLogger(__name__)
+
+# One SigLIP2 text tower per process. Without this, `encode_text` called
+# `from_pretrained` on every query (~4 GB disk read + HF hub metadata checks),
+# and a single DNS blip could close huggingface_hub's global httpx client —
+# breaking VLM for the rest of the eval run ("client has been closed").
+_siglip_processor: AutoProcessor | None = None
+_siglip_model: AutoModel | None = None
+_siglip_cached_name: str | None = None
+
+
+def reset_siglip_text_cache() -> None:
+    """Drop the in-memory SigLIP text stack so the next encode reloads.
+
+    Call after a VLM failure so a later query is not stuck with a half-built
+    model or a poisoned HF hub session.
+    """
+    global _siglip_processor, _siglip_model, _siglip_cached_name
+    _siglip_processor = None
+    _siglip_model = None
+    _siglip_cached_name = None
+
+
+def _load_siglip_text_stack(
+    model_name: str,
+    device: torch.device,
+    *,
+    local_files_only: bool,
+) -> tuple[AutoProcessor, AutoModel]:
+    processor = AutoProcessor.from_pretrained(
+        model_name,
+        local_files_only=local_files_only,
+    )
+    model = AutoModel.from_pretrained(
+        model_name,
+        local_files_only=local_files_only,
+    ).eval().to(device)
+    return processor, model
+
+
+def _ensure_siglip_text_stack(model_name: str, device: torch.device) -> None:
+    """Populate module-level SigLIP processor+model once per model_name."""
+    global _siglip_processor, _siglip_model, _siglip_cached_name
+
+    if (
+        _siglip_processor is not None
+        and _siglip_model is not None
+        and _siglip_cached_name == model_name
+    ):
+        return
+
+    reset_siglip_text_cache()
+    offline = os.environ.get("HF_HUB_OFFLINE", "").lower() in ("1", "true", "yes")
+
+    try:
+        logger.info("[siglip2] loading text tower %r (local_files_only=%s)", model_name, offline)
+        proc, mdl = _load_siglip_text_stack(model_name, device, local_files_only=offline)
+    except Exception as first_exc:
+        if offline:
+            raise
+        logger.warning(
+            "[siglip2] remote load failed (%s); retrying local_files_only=True",
+            first_exc,
+        )
+        proc, mdl = _load_siglip_text_stack(model_name, device, local_files_only=True)
+
+    _siglip_processor = proc
+    _siglip_model = mdl
+    _siglip_cached_name = model_name
 
 
 def load_shards(shards_dir: Path) -> tuple[list[str], np.ndarray, str | None]:
@@ -40,8 +112,9 @@ def extract_listing_id(rel_path: str) -> str:
 
 
 def encode_text(prompt: str, model_name: str, device: torch.device) -> np.ndarray:
-    model = AutoModel.from_pretrained(model_name).eval().to(device)
-    processor = AutoProcessor.from_pretrained(model_name)
+    _ensure_siglip_text_stack(model_name, device)
+    assert _siglip_processor is not None and _siglip_model is not None
+    processor, model = _siglip_processor, _siglip_model
     with torch.no_grad():
         inputs = processor(
             text=[prompt], padding="max_length", return_tensors="pt"
