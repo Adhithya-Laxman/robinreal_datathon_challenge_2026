@@ -1,0 +1,438 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Robin Real · Results</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <link href="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.css" rel="stylesheet">
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:          #f4f5f7;
+      --surface:     #ffffff;
+      --border:      #e2e4e9;
+      --text-1:      #111827;
+      --text-2:      #4b5563;
+      --text-3:      #9ca3af;
+      --accent:      #4f46e5;
+      --accent-bg:   #eef2ff;
+      --accent-dark: #3730a3;
+      --green:       #059669;
+      --green-bg:    #ecfdf5;
+      --sidebar-w:   400px;
+      --hdr-h:       60px;
+      --r:           10px;
+      --sh:          0 1px 2px rgba(0,0,0,.06), 0 2px 8px rgba(0,0,0,.06);
+      --sh-lg:       0 4px 12px rgba(0,0,0,.1), 0 8px 24px rgba(0,0,0,.07);
+    }
+
+    html, body {
+      height: 100%; overflow: hidden;
+      font-family: 'Inter', system-ui, -apple-system, sans-serif;
+      background: var(--bg); color: var(--text-1); line-height: 1.5;
+    }
+
+    /* ── Header ─────────────────────────────────────────────── */
+    header {
+      position: fixed; inset: 0 0 auto 0; height: var(--hdr-h);
+      background: var(--surface); border-bottom: 1px solid var(--border);
+      display: flex; align-items: center; padding: 0 16px; gap: 12px; z-index: 200;
+    }
+    .logo {
+      display: flex; align-items: center; gap: 7px;
+      font-weight: 700; font-size: 15px; color: var(--accent); flex-shrink: 0;
+    }
+    .logo-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); }
+    .divider  { width: 1px; height: 18px; background: var(--border); flex-shrink: 0; }
+    .hdr-query {
+      font-size: 13.5px; color: var(--text-2);
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0;
+    }
+    .hdr-query strong { color: var(--text-1); font-weight: 600; }
+    .pill {
+      margin-left: auto; flex-shrink: 0;
+      background: var(--accent-bg); color: var(--accent);
+      font-size: 11.5px; font-weight: 600; padding: 3px 10px; border-radius: 99px;
+    }
+
+    /* ── Two-pane layout ────────────────────────────────────── */
+    #layout { position: fixed; inset: var(--hdr-h) 0 0 0; display: flex; }
+
+    /* Sidebar */
+    #sidebar {
+      width: var(--sidebar-w); overflow-y: auto;
+      background: var(--bg); border-right: 1px solid var(--border);
+      padding: 14px 10px; scroll-behavior: smooth;
+    }
+    #sidebar::-webkit-scrollbar       { width: 3px; }
+    #sidebar::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+    /* Map */
+    #map { flex: 1; }
+
+    /* ── Listing card ───────────────────────────────────────── */
+    .card {
+      background: var(--surface); border-radius: var(--r);
+      border: 2px solid transparent; box-shadow: var(--sh); margin-bottom: 10px;
+      cursor: pointer; overflow: hidden; outline: none;
+      transition: box-shadow .18s, border-color .18s, transform .18s;
+    }
+    .card:hover        { box-shadow: var(--sh-lg); transform: translateY(-1px); }
+    .card:focus-visible{ box-shadow: 0 0 0 3px var(--accent-bg), var(--sh-lg); }
+    .card.active       { border-color: var(--accent); }
+
+    /* image area */
+    .img-wrap { position: relative; padding-bottom: 56%; background: var(--bg); overflow: hidden; }
+    .img-wrap img { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; display: block; }
+
+    .rank {
+      position: absolute; top: 8px; left: 8px; z-index: 1;
+      background: var(--accent); color: #fff;
+      font-size: 11px; font-weight: 700; width: 24px; height: 24px;
+      border-radius: 50%; display: flex; align-items: center; justify-content: center;
+    }
+    .img-nav {
+      position: absolute; top: 50%; transform: translateY(-50%);
+      width: 26px; height: 26px; border-radius: 50%; border: none;
+      background: rgba(255,255,255,.92); color: var(--text-1);
+      font-size: 16px; display: flex; align-items: center; justify-content: center;
+      cursor: pointer; z-index: 1; opacity: 0;
+      transition: opacity .15s; box-shadow: 0 1px 4px rgba(0,0,0,.18);
+    }
+    .img-wrap:hover .img-nav { opacity: 1; }
+    .img-nav.l { left: 8px; }
+    .img-nav.r { right: 8px; }
+    .img-n {
+      position: absolute; bottom: 7px; right: 8px;
+      background: rgba(0,0,0,.52); color: #fff;
+      font-size: 10px; font-weight: 500; padding: 1px 6px; border-radius: 8px;
+      pointer-events: none;
+    }
+
+    /* card body */
+    .body    { padding: 12px 13px; }
+    .title   { font-size: 13.5px; font-weight: 600; line-height: 1.35; margin-bottom: 3px; }
+    .loc     { font-size: 12px; color: var(--text-2); margin-bottom: 1px; }
+    .price-row { display: flex; align-items: baseline; gap: 6px; margin: 7px 0 5px; }
+    .price   { font-size: 15px; font-weight: 700; }
+    .price-sub { font-size: 11.5px; color: var(--text-3); }
+    .score-badge {
+      display: inline-flex; align-items: center; gap: 4px;
+      font-size: 11px; font-weight: 600; color: var(--green);
+      background: var(--green-bg); padding: 2px 8px; border-radius: 99px; margin-bottom: 6px;
+    }
+    .score-label { font-weight: 500; color: var(--text-3); }
+    .reason {
+      font-size: 12px; color: var(--text-2); line-height: 1.5; margin-bottom: 8px;
+      padding: 7px 9px; background: var(--bg); border-radius: 6px;
+      border-left: 3px solid var(--accent-bg);
+    }
+    .chips  { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+    .chip   { font-size: 11px; font-weight: 500; color: var(--text-2); background: var(--bg); border: 1px solid var(--border); padding: 2px 8px; border-radius: 99px; }
+    .poi-row{ display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 8px; }
+    .poi    { font-size: 11px; color: var(--text-3); }
+    .footer { border-top: 1px solid var(--border); padding: 9px 13px; display: flex; justify-content: flex-end; }
+    .btn-link {
+      font-size: 11.5px; font-weight: 600; color: var(--accent);
+      background: var(--accent-bg); border: none; border-radius: 7px;
+      padding: 5px 12px; cursor: pointer; text-decoration: none;
+      transition: background .15s;
+    }
+    .btn-link:hover { background: #e0e7ff; }
+
+    /* ── Map pins ───────────────────────────────────────────── */
+    .pin {
+      width: 26px; height: 26px; border-radius: 50%; border: 2px solid #fff;
+      background: var(--accent); color: #fff;
+      font-size: 10px; font-weight: 700;
+      display: flex; align-items: center; justify-content: center;
+      cursor: pointer; box-shadow: 0 2px 6px rgba(0,0,0,.25);
+      transition: transform .15s, background .15s;
+    }
+    .pin:hover, .pin.active { background: var(--accent-dark); transform: scale(1.25); }
+
+    .maplibregl-popup-content {
+      border-radius: 8px !important;
+      font-family: 'Inter', sans-serif !important;
+      font-size: 12px !important;
+      padding: 9px 12px !important;
+      box-shadow: var(--sh-lg) !important;
+    }
+
+    /* ── Empty / error ──────────────────────────────────────── */
+    .empty { padding: 48px 20px; text-align: center; color: var(--text-3); font-size: 14px; }
+    .empty p + p { margin-top: 6px; }
+
+    /* ── Responsive ─────────────────────────────────────────── */
+    @media (max-width: 700px) {
+      :root { --sidebar-w: 100%; --hdr-h: 56px; }
+      #layout    { flex-direction: column; }
+      #sidebar   { width: 100%; height: 50%; border-right: none; border-bottom: 1px solid var(--border); }
+      #map       { height: 50%; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <div class="logo"><span class="logo-dot"></span>Robin Real</div>
+    <div class="divider"></div>
+    <div class="hdr-query" id="hdr-query"></div>
+    <div class="pill" id="hdr-count"></div>
+  </header>
+
+  <div id="layout">
+    <aside id="sidebar"></aside>
+    <div id="map"></div>
+  </div>
+
+  <script src="https://unpkg.com/maplibre-gl@4.7.1/dist/maplibre-gl.js"></script>
+  <script>
+    /* injected by server */
+    const DATA     = __DATA_JSON__;
+    const listings = DATA.listings || [];
+    const query    = DATA.query    || '';
+
+    /* ── State ──────────────────────────────────────────────── */
+    let activeId = listings.length ? listings[0].listing_id : null;
+    const imgIdx = {};          // listing_id → current image index
+    let   map    = null;
+    const pinEls = {};          // listing_id → <button> DOM element
+
+    /* ── Helpers ────────────────────────────────────────────── */
+    function esc(s) {
+      if (s == null) return '';
+      return String(s)
+        .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+    }
+    function fmtPrice(p) {
+      if (p == null) return 'n/a';
+      return new Intl.NumberFormat('de-CH', {
+        style: 'currency', currency: 'CHF', maximumFractionDigits: 0,
+      }).format(p);
+    }
+    function getImgs(l) {
+      return [...new Set([l.hero_image_url, ...(l.image_urls || [])].filter(Boolean))];
+    }
+    const POI_ICONS = { transit: '🚌', supermarket: '🛒', school: '🏫', university: '🎓' };
+    function cleanReason(r) {
+      if (!r) return '';
+      // strip raw pipeline metric tokens like "bm25=1.00, dense=0.00, vlm=0.00"
+      return r.replace(/\b\w+=[-\d.]+,?\s*/g, '').replace(/[,;]+\s*$/, '').trim();
+    }
+    function fmtDist(m) {
+      return m < 1000 ? `${m}\u202fm` : `${(m / 1000).toFixed(1)}\u202fkm`;
+    }
+
+    /* ── Header ─────────────────────────────────────────────── */
+    document.getElementById('hdr-query').innerHTML = query
+      ? `Results for <strong>${esc(query)}</strong>`
+      : 'Search results';
+    document.getElementById('hdr-count').textContent =
+      `${listings.length} result${listings.length !== 1 ? 's' : ''}`;
+
+    /* ── Select / activate ──────────────────────────────────── */
+    function activate(id) {
+      activeId = id;
+
+      document.querySelectorAll('.card').forEach(c =>
+        c.classList.toggle('active', c.dataset.id === id));
+
+      const card = document.querySelector(`.card[data-id="${id}"]`);
+      if (card) card.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+
+      Object.entries(pinEls).forEach(([lid, el]) =>
+        el.classList.toggle('active', lid === id));
+
+      const r = listings.find(r => r.listing_id === id);
+      if (r && map && r.listing.latitude != null) {
+        map.easeTo({
+          center: [r.listing.longitude, r.listing.latitude],
+          zoom: Math.max(map.getZoom(), 13),
+          duration: 500,
+        });
+      }
+    }
+
+    /* ── Render sidebar ─────────────────────────────────────── */
+    function renderSidebar() {
+      const sidebar = document.getElementById('sidebar');
+      sidebar.innerHTML = '';
+
+      if (!listings.length) {
+        sidebar.innerHTML = '<div class="empty"><p>No results found.</p></div>';
+        return;
+      }
+
+      listings.forEach((result, i) => {
+        const { listing_id, score, reason, listing } = result;
+        const imgs = getImgs(listing);
+        const ci   = imgIdx[listing_id] || 0;
+        const imgUrl = imgs.length
+          ? imgs[((ci % imgs.length) + imgs.length) % imgs.length]
+          : null;
+
+        const features = (listing.features || []).slice(0, 4);
+        const pois = [
+          listing.geo_transit_m     != null && { t: 'transit',     m: listing.geo_transit_m },
+          listing.geo_supermarket_m != null && { t: 'supermarket', m: listing.geo_supermarket_m },
+          listing.geo_school_m      != null && { t: 'school',      m: listing.geo_school_m },
+          listing.geo_university_m  != null && { t: 'university',  m: listing.geo_university_m },
+        ].filter(Boolean);
+
+        const card = document.createElement('article');
+        card.className  = 'card' + (listing_id === activeId ? ' active' : '');
+        card.dataset.id = listing_id;
+        card.tabIndex   = 0;
+        card.setAttribute('role', 'button');
+        card.setAttribute('aria-label', listing.title || '');
+
+        /* image section */
+        const imgHtml = imgUrl ? `
+          <div class="img-wrap">
+            <span class="rank">${i + 1}</span>
+            <img src="${esc(imgUrl)}" alt="${esc(listing.title || '')}" loading="lazy">
+            ${imgs.length > 1 ? `
+              <button class="img-nav l" data-delta="-1" type="button" aria-label="Previous image">&#8249;</button>
+              <button class="img-nav r" data-delta="1"  type="button" aria-label="Next image">&#8250;</button>
+              <div class="img-n">${ci + 1}/${imgs.length}</div>` : ''}
+          </div>` : '';
+
+        /* meta */
+        const locParts = [listing.city, listing.canton].filter(Boolean).join(', ');
+        const addrParts = [
+          listing.street,
+          [listing.postal_code, listing.city].filter(Boolean).join(' '),
+        ].filter(Boolean).join(', ');
+
+        const chipsHtml = features.length
+          ? `<div class="chips">${features.map(f =>
+              `<span class="chip">${esc(f.replace(/_/g, ' '))}</span>`).join('')}</div>`
+          : '';
+        const poiHtml = pois.length
+          ? `<div class="poi-row">${pois.map(p =>
+              `<span class="poi">${POI_ICONS[p.t] || '📍'} ${fmtDist(p.m)}</span>`).join('')}</div>`
+          : '';
+        const footerHtml = listing.original_listing_url
+          ? `<div class="footer">
+               <a class="btn-link" href="${esc(listing.original_listing_url)}"
+                  target="_blank" rel="noopener noreferrer">View listing ↗</a>
+             </div>`
+          : '';
+
+        card.innerHTML = `
+          ${imgHtml}
+          <div class="body">
+            <div class="title">${esc(listing.title || 'Untitled')}</div>
+            ${locParts  ? `<div class="loc">${esc(locParts)}</div>`  : ''}
+            ${addrParts ? `<div class="loc">${esc(addrParts)}</div>` : ''}
+            <div class="price-row">
+              <span class="price">${fmtPrice(listing.price_chf)}</span>
+              <span class="price-sub">/mo
+                · ${listing.rooms ?? '?'} rooms
+                ${listing.living_area_sqm ? '· ' + listing.living_area_sqm + ' sqm' : ''}
+              </span>
+            </div>
+            <div><span class="score-badge"><span class="score-label">Match</span> &#9733; ${score.toFixed(2)}</span></div>
+            ${cleanReason(reason) ? `<div class="reason">${esc(cleanReason(reason))}</div>` : ''}
+            ${chipsHtml}
+            ${poiHtml}
+          </div>
+          ${footerHtml}
+        `;
+
+        /* events */
+        card.addEventListener('click', e => {
+          if (e.target.closest('.btn-link')) return;
+
+          const nav = e.target.closest('.img-nav');
+          if (nav) {
+            e.stopPropagation();
+            const delta = parseInt(nav.dataset.delta);
+            const n = imgs.length;
+            imgIdx[listing_id] = (((imgIdx[listing_id] || 0) + delta) % n + n) % n;
+            renderSidebar();
+            return;
+          }
+          activate(listing_id);
+        });
+        card.addEventListener('keydown', e => {
+          if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); activate(listing_id); }
+        });
+
+        sidebar.appendChild(card);
+      });
+    }
+
+    /* ── Map ────────────────────────────────────────────────── */
+    function initMap() {
+      map = new maplibregl.Map({
+        container: 'map',
+        style: {
+          version: 8,
+          sources: {
+            carto: {
+              type: 'raster',
+              tiles: [
+                'https://a.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+                'https://b.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+                'https://c.basemaps.cartocdn.com/light_all/{z}/{x}/{y}.png',
+              ],
+              tileSize: 256,
+              attribution: '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors &copy; CARTO',
+            },
+          },
+          layers: [{ id: 'bg', type: 'raster', source: 'carto' }],
+        },
+        center: [8.54, 47.37],
+        zoom: 7,
+        attributionControl: false,
+      });
+
+      map.addControl(new maplibregl.NavigationControl({ showCompass: false }), 'top-right');
+      map.addControl(new maplibregl.AttributionControl({ compact: true }), 'bottom-right');
+
+      const withCoords = listings.filter(
+        r => r.listing.latitude != null && r.listing.longitude != null,
+      );
+
+      withCoords.forEach((result, i) => {
+        const el = document.createElement('button');
+        el.type      = 'button';
+        el.className = 'pin' + (result.listing_id === activeId ? ' active' : '');
+        el.textContent = String(i + 1);
+        el.addEventListener('click', () => activate(result.listing_id));
+        pinEls[result.listing_id] = el;
+
+        new maplibregl.Marker({ element: el })
+          .setLngLat([result.listing.longitude, result.listing.latitude])
+          .setPopup(
+            new maplibregl.Popup({ offset: 14, closeButton: false }).setHTML(
+              `<strong>${esc(result.listing.title || '')}</strong><br>`
+              + `${esc(result.listing.city || '')}<br>`
+              + `${fmtPrice(result.listing.price_chf)}/mo`,
+            ),
+          )
+          .addTo(map);
+      });
+
+      if (withCoords.length > 1) {
+        const bounds = new maplibregl.LngLatBounds();
+        withCoords.forEach(r => bounds.extend([r.listing.longitude, r.listing.latitude]));
+        map.fitBounds(bounds, { padding: 80, maxZoom: 13, duration: 0 });
+      } else if (withCoords.length === 1) {
+        map.setCenter([withCoords[0].listing.longitude, withCoords[0].listing.latitude]);
+        map.setZoom(13);
+      }
+    }
+
+    /* ── Boot ───────────────────────────────────────────────── */
+    renderSidebar();
+    initMap();
+  </script>
+</body>
+</html>
