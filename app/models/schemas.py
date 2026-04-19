@@ -45,6 +45,14 @@ class ListingsSearchRequest(BaseModel):
     hard_filters: HardFilters | None = None
 
 
+class PoiPoint(BaseModel):
+    latitude: float
+    longitude: float
+    distance_m: int
+    name: str | None = None
+    type: str | None = None
+
+
 class ListingData(BaseModel):
     id: str
     title: str
@@ -66,6 +74,10 @@ class ListingData(BaseModel):
     offer_type: str | None = None
     object_category: str | None = None
     object_type: str | None = None
+    geo_transit_m: int | None = None
+    geo_supermarket_m: int | None = None
+    geo_school_m: int | None = None
+    geo_university_m: int | None = None
 
 
 class RankedListingResult(BaseModel):
