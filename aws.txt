@@ -1,0 +1,61 @@
+AWS integration — RobinReal.ai (Datathon 2026)
+===============================================
+Team: Alpha XAM | Participants: Adhithya Laxman Ravi Shankar Geetha, Aulia Kharis Rakhmasari, Mattia Loszach, Xander Yap
+
+We would like to be considered for the AWS × Datathon side challenge. Below is how AWS
+is used in our solution in a meaningful, end-to-end way.
+
+1) Amazon S3 — artifact store and reproducible runtime
+------------------------------------------------------
+All heavy offline outputs and everything the API needs at inference time live in S3:
+
+  • SQLite database with listings and precomputed text embeddings (listings.db)
+  • BM25 lexical index (bm25.pkl)
+  • Geospatial / Overpass POI caches (geo/)
+  • Precomputed SigLIP2 VLM image-feature shards (features_vlm / siglip2 shard_*.npz)
+
+A bootstrap step (`scripts/bootstrap_from_s3.sh`, wired in Docker Compose) syncs these
+artifacts from our team bucket into the runtime environment so any teammate can run
+`docker compose up` without manual downloads. We also use `aws s3 sync` / `aws s3 cp`
+in our workflow to publish or refresh artifacts after offline builds.
+
+Regions and bucket naming follow the workshop team account (e.g. us-west-2). The
+running API uses the same credential pattern as bootstrap for optional S3-backed
+listing image URLs when enriching HTTP responses.
+
+2) Amazon Bedrock — managed LLM and embeddings inside AWS
+---------------------------------------------------------
+We route core NLP through Bedrock when credentials allow:
+
+  • Anthropic Claude Sonnet (via Bedrock inference profile) for structured *query
+    understanding*: natural language → typed filters, soft preferences, per-signal
+    weights, Swiss rental conventions (e.g. Zimmer vs. English “bedrooms”).
+  • Cohere `embed-multilingual-v3` for dense retrieval aligned with multilingual
+    listing text (DE/FR/IT/EN).
+  • Anthropic Claude Haiku (Bedrock) for short per-listing *explanations* / reasons
+    alongside ranked results.
+
+This keeps the “brain” of the ranker inside AWS-managed APIs and matches our embedding
+dimension and retrieval design. If Bedrock is temporarily denied, the code falls back
+to local heuristics and/or direct Anthropic API (see claude.txt); BM25 and SQLite
+retrieval still work.
+
+3) AWS CLI and workshop credentials
+-----------------------------------
+We use temporary STS credentials from the AWS workshop environment (Get AWS CLI
+credentials) in `.env` for S3 and Bedrock. Tokens are refreshed when expired.
+
+4) Architecture note
+----------------------
+We designed the stack so compute (FastAPI + optional MCP) can run on a laptop with
+Docker or on cloud VMs; the *durable* team assets and *managed* Claude/Cohere access
+are centered on S3 + Bedrock. That separation matches a scalable, well-architected
+pattern: artifacts in object storage, inference via managed APIs, stateless API
+containers.
+
+Summary for judges
+------------------
+AWS is not optional decoration: S3 holds the full retrieval corpus and indexes;
+Bedrock provides production-grade Claude and Cohere paths for understanding and
+embedding. We integrate both into the same ranking pipeline evaluated by the
+RobinReal harness.

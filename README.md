@@ -1,449 +1,316 @@
-# Datathon 2026 Challenge Harness
+# RobinReal listing search — Datathon 2026
 
-This repository is a minimal starter harness for participants building listing search and ranking systems.
+Hybrid retrieval + ranking for Swiss rental listings: **SQLite** + **BM25** + **dense embeddings** (Bedrock Cohere or local fastembed) + optional **SigLIP2 VLM** shards + **geo / POI** features. Natural-language queries go through **Claude** (Bedrock or Anthropic API) for structured understanding; an **MCP** server exposes the same API to ChatGPT / Claude-style clients with a **Vite + React** map/list widget.
 
-Using this harness is optional. You are free to build your submission with it, adapt only parts of it, or implement your own solution independently.
+This repo started from the official challenge harness; the participant pipeline lives under `app/participant/` (notably `query_understanding.py`, `unified_ranker.py`, `hard_fact_extraction.py`).
 
-It gives you:
+---
 
-- a FastAPI server
-- a minimal Apps SDK / MCP app
-- a Vite + React widget app
-- committed listings CSVs under `raw_data/`
-- optional raw source bundles under `raw_data/` that can be normalized into harness CSVs
-- automatic CSV -> SQLite bootstrap on startup
-- a simple hard-filter search module
-- stub extraction, soft filtering, and ranking flow
-- Docker and Docker Compose setup
+## Prerequisites
 
-The important point: this is a starter harness, not a reference solution and not the required submission format. Use it only if it helps your team move faster.
+| Tool | Notes |
+|------|--------|
+| **Python 3.12+** | Required (`pyproject.toml`). |
+| **[uv](https://docs.astral.sh/uv/)** | Dependency install and `uv run` commands. |
+| **Node.js ≥ 18** | Only for building the MCP widget (`apps_sdk/web`). |
+| **Docker & Docker Compose** | Optional; recommended for S3 bootstrap + reproducible runtime. |
+| **NVIDIA GPU + nvidia-container-toolkit** | Optional; for `docker-compose.gpu.yml` (fastembed-gpu in the API container). |
+| **AWS credentials** | Optional locally; required to pull artifacts from S3 and/or use Bedrock / S3 image helpers. |
 
-## The Data
+---
 
-Download the challenge data bundle from the organizer-provided link, then extract `raw_data.zip` into the root of this repository. The starter harness expects that layout.
-
-There are data with and without images.
-With images:
-
-- robinreal
-- sred (montage) <- these are missing addresses, but have lat long, you may use geo reverse search as e.g. https://nominatim.org/ has
-- structured
-
-## Where To Edit
-
-If you choose to use the starter harness, the main participant-owned extension points are under `app/participant/`:
-
-- `hard_fact_extraction.py`
-- `soft_fact_extraction.py`
-- `soft_filtering.py`
-- `ranking.py`
-- `listing_row_parser.py`
-
-Starter-harness glue code lives under `app/harness/`:
-
-- `search_service.py`
-- `bootstrap.py`
-- `csv_import.py`
-
-Those files handle orchestration, startup wiring, and import flow.
-
-## Quick Start
-
-### Run locally
-
-Install dependencies:
+## 1. Clone and install (Python)
 
 ```bash
+git clone <your-repo-url>
+cd robinreal_datathon_challenge_2026
+
 uv sync --dev
 ```
 
-Start the API:
+Optional fastembed (CPU) for local embeddings when not using Bedrock Cohere:
 
 ```bash
-uv run uvicorn app.main:app --reload
+uv sync --dev --extra cpu
 ```
 
-The API will be available at:
+GPU extra (only if you have CUDA and want `fastembed-gpu` locally—usually use Docker GPU override instead):
+
+```bash
+uv sync --dev --extra gpu
+```
+
+---
+
+## 2. Environment variables
+
+Copy the example env file and edit it:
+
+```bash
+cp .env.example .env
+```
+
+Important groups (see comments inside `.env.example`):
+
+- **Bedrock** — `BEDROCK_AWS_*`, model IDs for Sonnet (query understanding), Cohere embeddings, Haiku (reserved in config).
+- **Anthropic API** — `ANTHROPIC_API_KEY` when Bedrock is blocked or for `hard_fact_extraction` (Haiku JSON) + Sonnet fallback path.
+- **AWS S3** — `ARTIFACTS_S3_*`, `AWS_*` for bootstrap and listing image enrichment.
+- **Local embeddings** — `USE_LOCAL_EMBEDDINGS`, `LOCAL_EMBEDDING_MODEL`, `HF_HOME` / Hugging Face cache for SigLIP text tower if you use VLM.
+
+Docker Compose **loads `.env` automatically** from the project root.
+
+---
+
+## 3. Data and artifacts
+
+The ranking API expects a populated **`listings.db`** (and optionally **BM25 / geo / VLM shards** under paths used by `unified_ranker`).
+
+### Option A — Docker Compose (recommended)
+
+On `docker compose up`, the **`bootstrap`** service runs `scripts/bootstrap_from_s3.sh` once and syncs from `ARTIFACTS_S3_BUCKET` (default in `.env.example`) into the volume:
+
+- `/data/listings.db`, `bm25.pkl`, `geo/…`
+- `/app/features_vlm/siglip2/shard_*.npz`
+
+You need valid **`AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`** (and usually `AWS_SESSION_TOKEN` for workshop STS) in `.env`.
+
+Optional:
+
+- `BOOTSTRAP_FORCE=1` — re-sync even if files exist.
+- `BOOTSTRAP_INCLUDE_IMAGES=1` — also sync raw images (large).
+
+### Option B — Local `uvicorn` without Docker
+
+Point the app at a database you already have:
+
+```bash
+export LISTINGS_DB_PATH="$PWD/data/listings.db"
+```
+
+Ensure `data/` contains `listings.db` (and that `features_vlm/siglip2/` exists relative to the repo if you use VLM). You can copy artifacts from a teammate or run bootstrap **inside** a one-off container, or use `aws s3 sync` manually to mirror what `bootstrap_from_s3.sh` does.
+
+### Challenge CSVs (harness)
+
+If you still use the organizer’s **`raw_data.zip`** under `raw_data/`, the harness can bootstrap SQLite from CSV on startup in some configurations; the **team pipeline** for this project assumes **prebuilt artifacts** (typically from S3) for evaluation-scale search.
+
+---
+
+## 4. Run the FastAPI API (local)
+
+```bash
+# Optional: Hugging Face cache location (SigLIP text encoder on first VLM use)
+export HF_HOME="$PWD/.hf_cache"
+
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+Smoke checks:
+
+```bash
+curl -s http://127.0.0.1:8000/health
+```
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/listings \
+  -H 'Content-Type: application/json' \
+  -d '{"query":"2 rooms Zurich under 2500","limit":5}'
+```
+
+Structured filter-only search (bypasses NL query pipeline):
+
+```bash
+curl -s -X POST http://127.0.0.1:8000/listings/search/filter \
+  -H 'Content-Type: application/json' \
+  -d '{"hard_filters":{"city":["Zürich"],"max_price":3000,"limit":5}}'
+```
+
+POI helper (used by the MCP tool `get_nearby_pois`):
+
+```bash
+curl -s "http://127.0.0.1:8000/poi/nearby?lat=47.37&lng=8.54&poi_type=transit&k=3"
+```
+
+Default DB path without env: **`data/listings.db`** under the repo (`app/config.py`).
+
+---
+
+## 5. Build the MCP widget (Vite)
+
+Required before the MCP server can serve `ReadResource` HTML (manifest under `apps_sdk/web/dist/.vite/manifest.json`).
+
+```bash
+cd apps_sdk/web
+npm ci
+npm run build
+cd ../..
+```
+
+---
+
+## 6. Run the MCP server (local)
+
+The MCP app proxies search to the API; it does **not** reimplement ranking.
+
+**Terminal 1 — API**
+
+```bash
+export HF_HOME="$PWD/.hf_cache"   # optional
+uv run uvicorn app.main:app --reload --host 127.0.0.1 --port 8000
+```
+
+**Terminal 2 — MCP**
+
+```bash
+export APPS_SDK_LISTINGS_API_BASE_URL=http://127.0.0.1:8000
+export APPS_SDK_PUBLIC_BASE_URL=http://127.0.0.1:8001
+export LISTINGS_IMAGE_PUBLIC_BASE_URL=http://127.0.0.1:8000
+
+cd apps_sdk/web && npm run build && cd ../..
+uv run uvicorn apps_sdk.server.main:app --reload --host 127.0.0.1 --port 8001
+```
+
+Endpoints:
+
+- MCP (streamable HTTP): **`http://127.0.0.1:8001/mcp`**
+- Optional HTML viewer (tool `open_results_page`): **`http://127.0.0.1:8001/view/<session_id>`**
+
+Saved JSON traces from MCP search (when enabled) go under **`results/`** in the repo by default (`RESULTS_DIR`; see `apps_sdk/server/main.py`).
+
+---
+
+## 7. Public URL (tunnel) for ChatGPT / remote MCP
+
+Expose **port 8001** (MCP). Examples:
+
+**Cloudflare quick tunnel**
+
+```bash
+npx --yes cloudflared tunnel --url http://127.0.0.1:8001
+```
+
+**ngrok**
+
+```bash
+ngrok http 8001
+```
+
+Set the **HTTPS origin** the tunnel prints (no trailing slash):
+
+```bash
+export APPS_SDK_PUBLIC_BASE_URL="https://YOUR-SUBDOMAIN.trycloudflare.com"
+# or https://xxxx.ngrok-free.app
+export LISTINGS_IMAGE_PUBLIC_BASE_URL="http://127.0.0.1:8000"
+```
+
+If **browsers** must load listing images via your API through a second tunnel, also expose **8000** and set `LISTINGS_IMAGE_PUBLIC_BASE_URL` to that HTTPS API origin.
+
+Restart the MCP server after changing env vars.
+
+Optional hardening (can cause `421` if misconfigured):
+
+```bash
+export MCP_ALLOWED_HOSTS=your-tunnel-hostname
+export MCP_ALLOWED_ORIGINS=https://your-tunnel-hostname
+```
+
+Register in the client:
 
 ```text
-http://localhost:8000
+https://YOUR-TUNNEL-HOST/mcp
 ```
 
-### Run with Docker
+---
+
+## 8. Docker Compose — full stack
+
+From the repo root (with `.env` filled for AWS / Bedrock as needed):
 
 ```bash
 docker compose up --build
 ```
 
-This starts the API on port `8000`.
+Services:
 
-The SQLite database is built automatically from the committed CSVs in `raw_data/` on first startup and stored in the mounted `/data` volume.
+| Service | Port | Role |
+|---------|------|------|
+| `bootstrap` | — | One-shot S3 sync into volume |
+| `api` | **8000** | FastAPI |
+| `mcp` | **8001** | MCP + static widget assets |
 
-If the SRED raw bundle is present under `raw_data/SRED_data(1)`, the harness also generates `raw_data/sred_data.csv` from the `*_with_text.csv` files, flattens the needed montage images into `raw_data/sred_images/`, and serves them locally under `/raw-data-images/<platform_id>.jpeg`.
-
-## Apps SDK MCP App
-
-This repository also includes a minimal split MCP app for ChatGPT and other MCP Apps-compatible clients such as Claude Desktop / Web.
-
-Shape:
-
-- FastAPI harness: data service
-- `apps_sdk/server`: MCP bridge
-- `apps_sdk/web`: Vite + React widget
-
-The MCP app is intentionally thin:
-
-- one tool only: `search_listings`
-- no authentication
-- no write actions
-- one combined UI with ranked list + map
-
-You may extend it, but you do not need to. The challenge focus is search quality, not Apps SDK integration.
-
-### Build the widget
+**GPU** (host must have NVIDIA Container Toolkit):
 
 ```bash
-cd apps_sdk/web
-npm install
-npm run build
+docker compose -f docker-compose.yml -f docker-compose.gpu.yml up --build
 ```
 
-### Run the MCP app
+This switches the API image to **`fastembed-gpu`** and attaches GPUs to the **`api`** service only.
 
-In one shell, run the FastAPI harness:
+Inside Compose, MCP uses `APPS_SDK_LISTINGS_API_BASE_URL=http://api:8000`. For remote widgets, override **`APPS_SDK_PUBLIC_BASE_URL`** in `.env` to your tunnel HTTPS origin before starting `mcp`.
+
+---
+
+## 9. MCP protocol smoke test
+
+With API + MCP running and the widget built:
 
 ```bash
-uv run uvicorn app.main:app --reload --port 8000
+uv run python scripts/mcp_smoke.py --url http://127.0.0.1:8001/mcp
 ```
 
-In another shell, run the MCP server:
+---
 
-```bash
-uv run uvicorn apps_sdk.server.main:app --reload --port 8001
-```
-
-The MCP endpoint is:
-
-```text
-http://localhost:8001/mcp
-```
-
-For tunnel testing, the minimal env setup is:
-
-```bash
-export APPS_SDK_LISTINGS_API_BASE_URL=http://localhost:8000
-export APPS_SDK_PUBLIC_BASE_URL=https://your-public-url
-```
-
-The widget HTML uses `APPS_SDK_PUBLIC_BASE_URL` to build its JS and CSS asset URLs. If this stays at the default `http://localhost:8001`, remote MCP hosts can reach the server but still fail to load the widget assets.
-
-These are the MCP-related env vars used by the split app:
-
-```bash
-export APPS_SDK_LISTINGS_API_BASE_URL=http://localhost:8000
-export APPS_SDK_PUBLIC_BASE_URL=https://your-public-url
-export MCP_ALLOWED_HOSTS=your-public-host
-export MCP_ALLOWED_ORIGINS=https://your-public-url
-```
-
-Meaning:
-
-- `APPS_SDK_LISTINGS_API_BASE_URL`: where the MCP server calls the local FastAPI harness
-- `APPS_SDK_PUBLIC_BASE_URL`: the public origin used for widget JS/CSS asset URLs
-- `MCP_ALLOWED_HOSTS`: optional public hostname allowlist for MCP transport protection
-- `MCP_ALLOWED_ORIGINS`: optional public HTTPS origin allowlist for MCP transport protection
-
-For local development and simple Cloudflare tunnel testing, leave `MCP_ALLOWED_HOSTS` and `MCP_ALLOWED_ORIGINS` unset. If you set them incorrectly, the MCP server can reject requests with `421 Misdirected Request`.
-
-### Testing in ChatGPT or other MCP Apps clients
-
-https://developers.openai.com/apps-sdk/deploy/testing (requires active subscription)
-https://modelcontextprotocol.io/extensions/apps/build#testing-with-claude
-
-For local testing in either client, expose the MCP server with a tunnel and point the client to:
-
-```text
-https://your-public-url/mcp
-```
-
-#### `cloudflared` example
-
-Start the FastAPI harness and MCP server locally first:
-
-```bash
-uv run uvicorn app.main:app --reload --port 8000
-uv run uvicorn apps_sdk.server.main:app --reload --port 8001
-```
-
-In another shell, open a tunnel to the MCP server:
-
-```bash
-npx cloudflared tunnel --url http://localhost:8001
-```
-
-`cloudflared` will print a public URL like:
-
-```text
-https://random-name.trycloudflare.com
-```
-
-Then export:
-
-```bash
-export APPS_SDK_LISTINGS_API_BASE_URL=http://localhost:8000
-export APPS_SDK_PUBLIC_BASE_URL=https://random-name.trycloudflare.com
-```
-
-Then restart the MCP server so it picks up the env vars:
-
-```bash
-uv run uvicorn apps_sdk.server.main:app --reload --port 8001
-```
-
-Register this MCP URL in ChatGPT or another MCP Apps client:
-
-```text
-https://random-name.trycloudflare.com/mcp
-```
-
-For pure local development and simple tunnel testing, the server accepts requests when those variables are unset. Only add them if you specifically want stricter host/origin enforcement and know the exact values you need.
-
-### Smoke test the MCP server
-
-You can run a small protocol-level smoke test before connecting a real host. It checks:
-
-- `initialize`
-- `tools/list`
-- `resources/list`
-- `resources/read`
-
-First build the widget and start the MCP server, then run:
-
-```bash
-uv run python scripts/mcp_smoke.py --url http://localhost:8001/mcp
-```
-
-If it passes, you know the MCP server is serving the `search_listings` tool and the widget resource with the expected metadata shape.
-
-## API
-
-### `GET /health`
-
-Simple health check.
-
-Example:
-
-```bash
-curl http://localhost:8000/health
-```
-
-### `POST /listings`
-
-High-level challenge entrypoint.
-
-This endpoint accepts only the natural-language user query and sends it through the full harness flow:
-
-```text
-query
--> extract_hard_facts
--> extract_soft_facts
--> filter_hard_facts
--> filter_soft_facts
--> rank_listings
-```
-
-Important:
-
-- by default, `extract_hard_facts` is a stub and does not interpret the query
-- by default, soft filtering and ranking are placeholders
-- this endpoint exists to show the intended flow, not to provide a real baseline
-
-Example request:
-
-```bash
-curl -X POST http://localhost:8000/listings \
-  -H "content-type: application/json" \
-  -d '{
-    "query": "3 room bright apartment in Zurich under 2800 CHF",
-    "limit": 25,
-    "offset": 0
-  }'
-```
-
-If you omit `limit`, the harness defaults to returning the top `25` listings. Since query understanding is stubbed by default, this makes the endpoint immediately usable for UI and Apps SDK testing.
-
-### `POST /listings/search/filter`
-
-Low-level search entrypoint.
-
-This endpoint accepts only explicit hard filters. It is useful if you want to call the structured search directly, for example from your own app, service, or MCP tool.
-
-Example request:
-
-```bash
-curl -X POST http://localhost:8000/listings/search/filter \
-  -H "content-type: application/json" \
-  -d '{
-    "hard_filters": {
-      "city": ["Winterthur"],
-      "features": ["child_friendly"],
-      "latitude": 47.4988,
-      "longitude": 8.7237,
-      "radius_km": 5,
-      "min_price": 1000,
-      "max_price": 3000,
-      "min_rooms": 2.0,
-      "max_rooms": 4.5,
-      "limit": 5,
-      "offset": 0,
-      "sort_by": "price_asc"
-    }
-  }'
-```
-
-### Response format
-
-Both endpoints in the starter harness currently return a wrapper object in this shape:
-
-```json
-{
-  "listings": [
-    {
-      "listing_id": "123",
-      "score": 1.0,
-      "reason": "Matched hard filters; soft ranking stub.",
-      "listing": {
-        "id": "123",
-        "title": "Example listing",
-        "city": "Zurich",
-        "latitude": 47.37,
-        "longitude": 8.54,
-        "price_chf": 2500,
-        "rooms": 3.0
-      }
-    }
-  ],
-  "meta": {}
-}
-```
-
-The `listings` key contains the ranked results. The `meta` key is intentionally left open so teams can add extracted filters, debug info, or other useful response metadata later.
-
-## Supported Hard Filters
-
-The default hard-filter implementation supports simple structured filters over the SQLite database:
-
-- `city`
-- `postal_code`
-- `canton`
-- `min_price`
-- `max_price`
-- `min_rooms`
-- `max_rooms`
-- `latitude`
-- `longitude`
-- `radius_km`
-- `features`
-- `offer_type`
-- `object_category`
-- `limit`
-- `offset`
-- `sort_by`
-
-This logic is intentionally simple and isolated so teams can replace it easily.
-
-## Where To Customize
-
-If you want to build your submission on top of this starter, the main extension points are:
-
-- [app/participant/hard_fact_extraction.py](app/participant/hard_fact_extraction.py)
-  Stub for natural-language hard fact extraction.
-- [app/participant/soft_fact_extraction.py](app/participant/soft_fact_extraction.py)
-  Stub for extracting softer preferences from the query.
-- [app/participant/soft_filtering.py](app/participant/soft_filtering.py)
-  Stub for post-filtering candidates after hard filtering.
-- [app/participant/ranking.py](app/participant/ranking.py)
-  Stub ranking logic and result shaping.
-- [app/participant/listing_row_parser.py](app/participant/listing_row_parser.py)
-  CSV-row parsing and feature extraction logic.
-- [app/core/hard_filters.py](app/core/hard_filters.py)
-  The current structured filter implementation over SQLite.
-- [app/harness/search_service.py](app/harness/search_service.py)
-  High-level orchestration between extraction, filtering, and ranking.
-- [app/harness/bootstrap.py](app/harness/bootstrap.py)
-  Database bootstrap lifecycle.
-- [app/harness/csv_import.py](app/harness/csv_import.py)
-  CSV import and schema/index creation.
-- [app/core/s3.py](app/core/s3.py)
-  Helper functions for loading listing image URLs from S3 by `listing_id`.
-- [apps_sdk/server/main.py](apps_sdk/server/main.py)
-  Minimal MCP Apps bridge exposing the single `search_listings` tool.
-- [apps_sdk/web/src/App.tsx](apps_sdk/web/src/App.tsx)
-  Combined ranked-list plus map widget.
-- [app/api/routes/listings.py](app/api/routes/listings.py)
-  API surface for the two listing endpoints.
-
-## Project Structure
-
-```text
-app/
-  api/routes/listings.py     API endpoints
-  core/hard_filters.py       hard-filter search logic
-  core/s3.py                 S3 image helper functions
-  harness/bootstrap.py       database bootstrap lifecycle
-  harness/csv_import.py      CSV -> SQLite import helpers
-  harness/search_service.py  high-level orchestration
-  models/schemas.py          request/response models
-  participant/               participant-editable logic
-apps_sdk/
-  server/                    MCP Apps bridge
-  web/                       Vite React widget app
-raw_data.zip                 GET THIS FROM S3
-tests/                       basic harness tests
-docker-compose.yml           local container runtime
-```
-
-## Development
-
-Run the tests:
+## 10. Tests
 
 ```bash
 uv run pytest tests -q
 ```
 
-If you want to rebuild the SQLite database from scratch, remove the generated database file or clear the mounted Docker volume and restart the service.
+---
 
-## AWS Credentials
+## 11. Key directories
 
-The S3 helper in `app/core/s3.py` uses `boto3` and the standard AWS credential chain. For example:
-
-```bash
-export AWS_ACCESS_KEY_ID=...
-export AWS_SECRET_ACCESS_KEY=...
-export AWS_DEFAULT_REGION=eu-central-2
+```text
+app/
+  api/routes/listings.py       # POST /listings, /listings/search/filter, GET /poi/nearby
+  participant/
+    query_understanding.py     # Claude Sonnet + tool use (Bedrock / Anthropic)
+    hard_fact_extraction.py    # Claude Haiku JSON hard filters (Anthropic API)
+    unified_ranker.py          # Hybrid ranking + VLM / geo / fusion
+  core/                        # SQLite filters, S3 helpers
+apps_sdk/
+  server/main.py               # MCP tools + widget resource + /view/* viewer
+  web/                         # Vite React widget → dist/
+scripts/
+  bootstrap_from_s3.sh         # Artifact sync (Docker bootstrap)
+data/                          # Default local DB path: data/listings.db
+results/                     # Optional MCP JSON dumps (local dev)
+.env.example                 # Copy to .env
 ```
 
-Optional S3 config:
+---
 
-```bash
-export LISTINGS_S3_BUCKET=crawl-data-951752554117-eu-central-2-an
-export LISTINGS_S3_REGION=eu-central-2
-export LISTINGS_S3_PREFIX=prod
-```
+## 12. Troubleshooting
 
-## Download All Images From S3
+| Issue | What to check |
+|--------|----------------|
+| `Widget manifest not found` | Run `npm run build` in `apps_sdk/web`. |
+| `404` / empty search | `LISTINGS_DB_PATH` valid and file exists; run bootstrap or sync S3. |
+| Bedrock `AccessDenied` | Workshop policy; use `ANTHROPIC_API_KEY` or `FORCE_BEDROCK_FALLBACK=1` per `.env.example`. |
+| VLM slow / download on first query | Set `HF_HOME` to a persistent directory with space. |
+| MCP works locally but widget broken remotely | `APPS_SDK_PUBLIC_BASE_URL` must be the **tunnel HTTPS** origin, not `localhost`. |
+| `Permission denied` writing results | Default `RESULTS_DIR` is repo `results/` for local MCP; Docker uses `./results:/results`. |
 
-If you want a full local copy of the listing images, the simplest option is to copy the whole `prod/` prefix with the AWS CLI. The image files are stored under paths like `prod/<source>/images/...`, so starting from the `prod/` root will include every image tree.
+---
 
-Example:
+## 13. Side-challenge notes (AWS / Anthropic)
 
-```bash
-export AWS_DEFAULT_REGION=eu-central-2
-export LISTINGS_S3_BUCKET=crawl-data-951752554117-eu-central-2-an
-export LISTINGS_S3_PREFIX=prod
+Short write-ups for organizers:
 
-aws s3 cp \
-  "s3://${LISTINGS_S3_BUCKET}/${LISTINGS_S3_PREFIX}/" \
-  ./downloads/prod \
-  --recursive
-```
+- **`aws.txt`** — S3 artifacts, Bedrock, CLI/bootstrap.
+- **`claude.txt`** — Claude Sonnet / Haiku usage and MCP.
+
+---
+
+## 14. Technical write-up
+
+See `docs/datathon2026_robinreal_technical_writeup.tex` for a fuller architecture and pipeline description. The original challenge harness emphasized CSV import stubs; this repo’s main search path is the **unified ranker** + artifacts from S3.

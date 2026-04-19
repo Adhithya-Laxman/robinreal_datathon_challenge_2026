@@ -132,7 +132,12 @@ def build_search_tool_result(
         f"IMPORTANT: In your response you MUST show the Listing URL and all Image URLs for every property listed below.\n"
     ]
     for item in listings:
-        l = item.get("listing", {})
+        if not isinstance(item, dict):
+            continue
+        # If API returns "listing": null, .get("listing", {}) is None — normalize to {}.
+        l = item.get("listing") or {}
+        if not isinstance(l, dict):
+            continue
         features = ", ".join(l.get("features") or []) or "none"
         lat, lon = l.get("latitude"), l.get("longitude")
         coords = f"{lat}, {lon}" if lat is not None and lon is not None else "N/A"
@@ -158,7 +163,7 @@ def build_search_tool_result(
         lines.append(
             f"---\n"
             f"Title: {l.get('title')}\n"
-            f"Score: {item.get('score', 0):.3f} ({item.get('reason', '')})\n"
+            f"Score: {float(item.get('score') or 0):.3f} ({item.get('reason') or ''})\n"
             f"Price: CHF {l.get('price_chf')}/mo\n"
             f"Rooms: {l.get('rooms')} | Area: {l.get('living_area_sqm')} sqm\n"
             f"Address: {l.get('street')}, {l.get('postal_code')} {l.get('city')}, {l.get('canton')}\n"
@@ -167,7 +172,7 @@ def build_search_tool_result(
             f"Type: {l.get('object_category')} ({l.get('offer_type')})\n"
             f"Features: {features}\n"
             f"{poi_text}"
-            f"Description: {l.get('description', '')[:300]}\n"
+            f"Description: {(l.get('description') or '')[:300]}\n"
             f"Listing URL: {l.get('original_listing_url')}\n"
             f"{images_text}"
         )
@@ -436,8 +441,14 @@ async def _handle_call_tool(req: types.CallToolRequest) -> types.ServerResult:
     )
 
 
+def _default_results_dir() -> Path:
+    # Repo root: apps_sdk/server/main.py -> parents[2]
+    return Path(__file__).resolve().parents[2] / "results"
+
+
 def _save_results(*, query: str, payload: dict[str, Any]) -> None:
-    results_dir = Path(os.getenv("RESULTS_DIR", "/results"))
+    # Default to ./results under the repo (writable locally). Docker sets RESULTS_DIR=/results.
+    results_dir = Path(os.getenv("RESULTS_DIR", str(_default_results_dir())))
     results_dir.mkdir(parents=True, exist_ok=True)
     slug = re.sub(r"[^\w]+", "_", query.lower()).strip("_")[:60]
     timestamp = datetime.utcnow().strftime("%Y%m%d_%H%M%S")

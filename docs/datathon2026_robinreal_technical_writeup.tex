@@ -1,0 +1,147 @@
+\documentclass[11pt]{article}
+\usepackage{graphicx}
+\usepackage[margin=1in]{geometry}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{booktabs}
+\usepackage{parskip}
+\setlength{\parskip}{0.35em}
+
+\title{\vspace{-1.2cm}\textbf{Datathon 2026: Robinreal --- Hybrid Listing Search \& Ranking}\vspace{-0.15cm}}
+\author{\textbf{[Team / author names --- replace]}\\[0.25em]\small Swiss Real-Estate Search Challenge --- Technical overview}
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+\noindent
+We present a \textbf{production-style hybrid retrieval and ranking} pipeline for Swiss real-estate listings. Natural-language queries are mapped to \textbf{structured hard filters} and \textbf{soft preferences} using a large language model (LLM), with conservative fallbacks when cloud inference is unavailable. Candidates are drawn from \textbf{SQLite}, then scored with \textbf{dense multilingual embeddings}, \textbf{BM25} lexical retrieval, optional \textbf{SigLIP2}-based visual similarity over precomputed image shards, \textbf{geospatial proximity} to points of interest, and \textbf{soft price-band} intent. Per-query \textbf{LLM-emitted weights} blend these signals. We ship a \textbf{FastAPI} service exposing \textbf{POST /listings} for evaluation, plus an optional \textbf{Model Context Protocol (MCP)} server and \textbf{React} map/list widget. Runtime artifacts (database, BM25 index, geo caches, VLM shards) are synchronized from \textbf{Amazon S3}; listing photos may be served from S3 or augmented when CDN links expire.
+\end{abstract}
+
+\section{Problem and objectives}
+
+Real users mix \textbf{strict constraints} (city, price ceiling, minimum rooms) with \textbf{soft preferences} (``bright'', ``quiet'', ``near ETH'', ``family-friendly''). A strong system must (i)~\textbf{not} return listings that violate must-have constraints beyond a small margin, (ii)~rank the remainder by overall relevance, and (iii)~handle \textbf{vague language}, \textbf{missing fields}, and \textbf{multilingual} input (DE/FR/IT/EN common in Switzerland).
+
+Our objective is \textbf{Challenge~1}: improve empirical search quality on the Robinreal listing corpus using the provided harness, while keeping the ranking stack \textbf{inspectable} (per-signal scores and reasons) and \textbf{deployable} (single-container workflow via Docker Compose, optional GPU profile for local embedding throughput).
+
+\section{Architecture overview}
+
+The logical data flow (implementation: \texttt{app/participant/unified\_ranker.py}, \texttt{app/participant/query\_understanding.py}) is as follows.
+
+\begin{quote}
+\textbf{User query} $\rightarrow$ \textbf{Query understanding (LLM)} $\rightarrow$ \textbf{HardFilters SQL} (+ relaxation if too few hits) $\rightarrow$ \textbf{Quality post-filter} (non-offers, geo sanity) $\rightarrow$ \textbf{Parallel relevance signals} (dense, BM25, VLM?, geo, price) $\rightarrow$ \textbf{Weighted fusion} $\rightarrow$ \textbf{Ranked list + explanations}; optional \textbf{image URL enrichment} for the HTTP response.
+\end{quote}
+
+\noindent
+The MCP layer (\texttt{apps\_sdk/server}) calls the same search API over HTTP and embeds a static-built Vite widget for ChatGPT/Claude-style clients. A separate \textbf{POI tool} returns nearby transit, supermarkets, schools, or universities for a given coordinate pair, using the same Overpass-derived caches as the ranker's geo features.
+
+\section{End-to-end pipeline (stages)}
+
+\subsection{Query understanding}
+A \textbf{single} LLM invocation (Anthropic Claude via \textbf{Amazon Bedrock}, or \textbf{Anthropic API} if Bedrock denies access, or a \textbf{rule-based} extractor if both fail) maps the utterance into a typed \texttt{QueryUnderstanding}: \texttt{HardFilters}, \texttt{SoftPreferences}, \texttt{soft.weights} (per downstream signal), optional \textbf{anchors} (e.g.\ ETH Zentrum, Bahnhof), \textbf{locality hints} (Kreis, suburb names---distinct from coarse \texttt{city}), language, and an English \texttt{interpretation} string. The system prompt encodes Swiss rental-market rules, e.g.\ mapping English ``\emph{N bedrooms}'' to Swiss \textbf{min rooms} $= N{+}1$ (living room counts as a \emph{Zimmer}), and separating \textbf{must-have} balcony from \textbf{nice-to-have} parking.
+
+\subsection{Retrieval and relaxation}
+\texttt{extract\_hard\_facts} converts the understanding into SQL-friendly \texttt{HardFilters}. The harness runs \texttt{filter\_hard\_facts} against \texttt{listings.db}. If the candidate count falls below a floor, \textbf{constraint relaxation} widens filters so the ranker always has a pool to score (while logging relaxation for debugging).
+
+\subsection{Listing quality (post-SQL)}
+\texttt{listing\_quality.py} removes listings that pass numeric filters but are \textbf{not actual offers}: apartment \textbf{swap} posts, ``wanted''/seeker ads, and listings clearly outside Switzerland when the query targets CH. For queries that imply \textbf{long-term} tenancy, short-term/\textbf{befristet} leases can be down-ranked or filtered. This addresses failure modes where lexical similarity to the user's wish-list is high but the document type is wrong.
+
+\subsection{Relevance signals (hybrid)}
+Each surviving listing receives partial scores in $[0,1]$ (normalized before fusion):
+\begin{itemize}[noitemsep, topsep=0pt]
+  \item \textbf{Dense} --- Embedding similarity between query and listing text fields; embeddings are stored in SQLite (Bedrock Cohere) or computed with \textbf{fastembed} (e.g.\ multilingual E5/BGE-M3) when \texttt{USE\_LOCAL\_EMBEDDINGS=1}.
+  \item \textbf{BM25} --- Multilingual BM25 with stemming and \textbf{language detection} per document/query for robust lexical matching on descriptions and titles.
+  \item \textbf{VLM} --- Offline \textbf{SigLIP2} image embeddings grouped in \texttt{shard\_*.npz} files; at query time the \textbf{text tower} encodes the user query and scores against shard rows when the query contains \textbf{visual} cues (brightness, modern kitchen, view, etc.). Gated off for purely structural queries to save latency.
+  \item \textbf{Geo} --- Distances in meters to nearest transit, supermarket, school; \textbf{anchor} proximity (e.g.\ university column for campus-style queries). Weights default to zero unless soft intent enables them (e.g.\ ``near schools'' activates school distance).
+  \item \textbf{Price band} --- Soft alignment between stated price intent and listing rent/price when the query expresses budget descriptively (``affordable'') rather than only a hard cap.
+\end{itemize}
+
+\subsection{Fusion}
+Default fusion weights exist for dense/BM25/VLM/geo/price; the LLM's \texttt{soft.weights} are \textbf{remapped} onto internal signal names (\texttt{dense\_text}$\rightarrow$\texttt{dense}, \texttt{clip\_image}$\rightarrow$\texttt{vlm}, etc.) and combined with the per-listing normalized scores. The final \texttt{score} and a short \texttt{reason} string (top contributing signals) accompany each hit for transparency.
+
+\subsection{Response enrichment}
+The listings route can rewrite \textbf{image URLs} to \textbf{S3 HTTPS} paths or API-static paths when CDN links are stale, using \texttt{platform\_id} and bucket listing (\texttt{app/core/s3.py}), subject to environment flags.
+
+\section{Ranking signal defaults (reference)}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}lcp{5.2cm}@{}}
+\toprule
+\textbf{Signal} & \textbf{Default wt.} & \textbf{Gated by intent?} \\
+\midrule
+Dense & 0.35 & Always on \\
+BM25 & 0.20 & Always on \\
+VLM & 0.20 & Yes (visual language) \\
+Geo transit & 0.10 & Yes (\texttt{near\_public\_transport}, etc.) \\
+Geo school & 0.05 & Yes (family / schools) \\
+Geo anchor & 0.15 & Yes (named landmarks) \\
+Price band & 0.10 & Yes (soft price intent) \\
+\bottomrule
+\end{tabular}
+\caption{Baseline weights; LLM may override via \texttt{soft.weights} per query.\label{tab:weights}}
+\end{table}
+
+\section{Tech stack (summary)}
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{@{}ll@{}}
+\toprule
+\textbf{Layer} & \textbf{Components} \\
+\midrule
+API & FastAPI, Uvicorn, Pydantic schemas \\
+Storage & SQLite (\texttt{listings.db}), pickle BM25, NPZ VLM shards \\
+Embeddings & AWS Bedrock Cohere \textit{or} fastembed (CPU/GPU extra) \\
+LLM & Claude Sonnet family (Bedrock / direct API) \\
+Lexical & rank-bm25, snowball stemmers \\
+Vision & PyTorch, Transformers, SigLIP2-so400m \\
+MCP & FastMCP, streamable HTTP, widget HTML resource \\
+Frontend & React, Vite, MapLibre GL \\
+Cloud & AWS S3 (artifacts + crawl images), boto3, IAM credentials \\
+Containers & Docker Compose; bootstrap job pulls S3 before \texttt{api}/\texttt{mcp} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section{Data and infrastructure}
+
+\textbf{Artifacts bucket.} On startup (or via \texttt{scripts/bootstrap\_from\_s3.sh}), we sync: \texttt{artifacts/text\_embeddings/listings.db}, \texttt{artifacts/bm25/bm25.pkl}, \texttt{artifacts/geo/overpass\_*.json}, \texttt{artifacts/vlm/siglip2/shard\_*.npz}. Optional \texttt{raw/downloads/} syncs tens of thousands of image files for offline inspection or re-embedding (disabled by default).
+
+\textbf{Crawl image bucket.} Challenge images follow \texttt{prod/<source>/images/platform\_id=...} layouts; the API can list objects to build fresh URLs when marketing CDNs return 404.
+
+\textbf{Session events (bonus path).} \texttt{session\_events} in SQLite can log clicks/dwell/saves; \texttt{session\_id} may be threaded into search for future personalization without changing the core evaluation contract.
+
+\section{MCP and demo UI}
+
+The MCP server exposes \textbf{\texttt{search\_listings}} (returns structured JSON for the model and a \textbf{widget resource URI} for the UI) and \textbf{\texttt{get\_nearby\_pois}} (lat/lon + category). The widget bundle is built with \texttt{npm run build}, served under \texttt{/widget-assets}, and referenced with \texttt{APPS\_SDK\_PUBLIC\_BASE\_URL} for remote HTTPS clients. Content-Security-Policy metadata whitelists map tile CDNs, Comparis asset hosts, S3 image origins, and optionally the public API origin for \texttt{/raw-data-images}.
+
+\section{API contract (evaluation)}
+
+\textbf{POST /listings} --- Input: \texttt{query}, \texttt{limit}, \texttt{offset}. Output: \texttt{ListingsResponse} with \texttt{meta} and a list of \texttt{RankedListingResult} objects, each with \texttt{listing\_id}, fused \texttt{score}, human-readable \texttt{reason}, and a nested \texttt{listing} record (title, geo, price, rooms, features, image URLs, etc.). \textbf{GET /health} for liveness.
+
+\section{Design challenges addressed}
+
+\begin{itemize}[noitemsep, topsep=2pt]
+  \item \textbf{Ambiguous adjectives} --- Routed to soft scores and VLM/geo rather than brittle SQL.
+  \item \textbf{Conflicting soft goals} --- LLM assigns relative weights; fusion produces a single ordering with explainable dominant signals.
+  \item \textbf{Incomplete listings} --- Degraded signals yield zeros, not crashes; relaxation avoids empty result sets when possible.
+  \item \textbf{Multilingual and Swiss conventions} --- Prompt rules and room-count handling reduce systematic mismatches.
+\end{itemize}
+
+\section{Limitations and future work}
+
+\textbf{Commute times} (SBB/ZVV isochrones) are not fully wired as hard constraints in all paths---geo uses precomputed POI distances and anchors. \textbf{Bonus personalization} beyond event logging would require a training or bandit layer on top of \texttt{session\_events}. \textbf{Latency}: first SigLIP/HF download on cold instances can be minutes without a baked cache volume.
+
+\section{External services (declare)}
+
+Anthropic Claude; Amazon Bedrock (Claude + Cohere embeddings); Anthropic direct API fallback; Hugging Face model hubs for SigLIP2 and fastembed weights; optional Cloudflare tunnel or reverse proxy for public HTTPS demos.
+
+\section{Reproducibility}
+
+Clone the repository, copy \texttt{.env.example} to \texttt{.env}, run \texttt{uv sync}, execute \texttt{docker compose up --build} (set \texttt{BOOTSTRAP\_FORCE=1} to refresh artifacts). Core ranking logic lives in \texttt{app/participant/unified\_ranker.py}; query schema in \texttt{app/participant/schemas.py}. Benchmarks and LLM-judge result dumps may live under \texttt{results/eval/} for paper-style discussion.
+
+\end{document}

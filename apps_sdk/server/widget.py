@@ -33,7 +33,9 @@ def load_widget_html(*, dist_dir: Path, public_base_url: str) -> str:
     if not isinstance(main_entry, dict):
         raise KeyError("Expected Vite manifest entry for src/main.tsx or index.html.")
 
-    script_path = main_entry["file"]
+    script_path = main_entry.get("file")
+    if not isinstance(script_path, str) or not script_path:
+        raise KeyError("Vite manifest entry is missing a valid 'file' field.")
     css_paths = main_entry.get("css", [])
 
     css_links = "\n".join(

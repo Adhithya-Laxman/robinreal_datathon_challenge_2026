@@ -1,0 +1,71 @@
+Anthropic / Claude integration — RobinReal.ai (Datathon 2026)
+==============================================================
+Team: Alpha XAM
+Participants: Adhithya Laxman Ravi Shankar Geetha, Aulia Kharis Rakhmasari,
+              Mattia Loszach, Xander Yap
+
+We would like to be considered for the Anthropic × Datathon side challenge.
+Below is how we use Claude in our application.
+
+
+1) Query understanding — Claude Sonnet (tool use)
+-------------------------------------------------
+Implementation: `app/participant/query_understanding.py`
+
+Natural-language queries become a structured `QueryUnderstanding`: soft preferences,
+locality / district hints, anchors, and **per-query weights** for the hybrid ranker
+(dense, BM25, optional VLM, geo, price band). One **forced tool call** to
+`record_query_understanding` returns this schema.
+
+  • **Primary:** Claude Sonnet via **Amazon Bedrock** (`invoke_model`,
+    `BEDROCK_QUERY_UNDERSTANDING_MODEL_ID`).
+
+  • **Fallback:** **Anthropic API** — same tool schema and system prompt
+    (`ANTHROPIC_API_KEY`, `ANTHROPIC_MODEL_ID`).
+
+  • **Last resort:** conservative **heuristic** if both fail.
+
+Swiss rental rules are in the system prompt (e.g. English “bedrooms” vs *Zimmer*,
+districts in `locality_hints`). The ranker (`app/participant/unified_ranker.py`) uses
+this for filters and fusion weights.
+
+
+2) Hard filters — Claude Haiku (Anthropic API)
+----------------------------------------------
+Implementation: `app/participant/hard_fact_extraction.py`
+
+A **second** model call per query runs **Claude Haiku** (`claude-haiku-4-5-20251001`)
+with a JSON-oriented system prompt to extract **strict hard filters** (city, price,
+rooms, features, etc.) from the same user text.
+
+In `unified_ranker.unified_search`, we call both `extract_hard_facts(query)` (Haiku)
+and `understand(query)` (Sonnet), then **`_reconcile_hard_filters`** merges them so
+SQL filtering gets the best of Haiku’s numeric precision and Sonnet’s bedroom / Swiss
+rules. See comments in `unified_ranker.py` (stage 1).
+
+If `ANTHROPIC_API_KEY` is unset, `extract_hard_facts` returns empty hard filters.
+
+
+3) Ranked-listing “reason” strings (HTTP API)
+---------------------------------------------
+Implementation: `app/api/routes/listings.py`
+
+The **`reason`** field on each hit is a short **deterministic** summary of the top
+fusion signals (e.g. `dense_text=0.42, bm25=0.31`), not an extra LLM call. This keeps
+latency predictable and matches the hybrid score breakdown.
+
+(`BEDROCK_EXPLANATION_MODEL_ID` appears in `app/config.py` / `.env.example` for optional
+future use; it does not author these `reason` strings in the current route.)
+
+
+4) MCP server — same search stack for assistants
+------------------------------------------------
+Implementation: `apps_sdk/server/main.py`, `apps_sdk/server/client.py`
+
+We expose the same **FastAPI** backend (`POST /listings`, `GET /poi/nearby`) as MCP
+**tools**: `search_listings`, `get_nearby_pois`, `open_results_page`. The MCP process
+calls the API over HTTP (`APPS_SDK_LISTINGS_API_BASE_URL`).
+
+We register an MCP **resource** for the **map + list widget** (HTML from the Vite
+build in `apps_sdk/server/widget.py`).
+
