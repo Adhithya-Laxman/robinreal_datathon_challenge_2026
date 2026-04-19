@@ -336,23 +336,51 @@ def get_index(db_path: Path | None = None, *, model_id: str | None = None) -> _V
         return _cached_index
 
 
+def fetch_embeddings_by_ids(
+    listing_ids: list[str],
+    db_path: Path | None = None,
+) -> np.ndarray:
+    """Fetch stored embedding vectors for the given listing_ids.
+
+    Returns (N, EMBED_DIM) float32 array. Missing IDs are silently skipped.
+    """
+    if not listing_ids:
+        return np.empty((0, EMBED_DIM), dtype=np.float32)
+    settings = get_settings()
+    path = db_path or settings.db_path
+    con = sqlite3.connect(path)
+    try:
+        placeholders = ",".join("?" * len(listing_ids))
+        rows = con.execute(
+            f"SELECT vector FROM listing_embeddings WHERE listing_id IN ({placeholders})",
+            listing_ids,
+        ).fetchall()
+    finally:
+        con.close()
+    if not rows:
+        return np.empty((0, EMBED_DIM), dtype=np.float32)
+    return np.stack([np.frombuffer(r[0], dtype=np.float32) for r in rows])
+
+
 def search_by_query_text(
     query: str,
     *,
     top_k: int = 50,
     db_path: Path | None = None,
     candidate_ids: Iterable[str] | None = None,
+    query_vec: np.ndarray | None = None,
 ) -> list[tuple[str, float]]:
     """Embed `query` and return [(listing_id, cosine_similarity), ...] sorted desc.
 
     If `candidate_ids` is given, restrict search to that subset (typical usage
-    after hard filtering).
+    after hard filtering). If `query_vec` is provided it is used directly
+    (skips re-embedding), which lets callers inject a feedback-blended vector.
     """
     idx = get_index(db_path)
     if idx.matrix.shape[0] == 0:
         return []
 
-    qvec = embed_query(query)
+    qvec = query_vec if query_vec is not None else embed_query(query)
     sims = idx.matrix @ qvec  # (N,) — both sides are unit-normed, so this is cosine.
 
     if candidate_ids is not None:

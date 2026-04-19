@@ -21,6 +21,7 @@ import json
 import logging
 import re
 import threading
+import time
 from functools import lru_cache
 from typing import Any
 
@@ -54,7 +55,7 @@ Rules:
 - "must have balcony", "with balcony" => HARD feature. \
   "ideally with parking", "nice to have a balcony" => SOFT boolean pref.
 - Use the canonical feature names only (balcony, elevator, parking, garage, \
-  fireplace, child_friendly, pets_allowed, temporary, new_build, \
+  fireplace, child_friendly, pets_allowed, new_build, \
   wheelchair_accessible, private_laundry, minergie_certified).
 - CRITICAL — English "bedrooms" vs Swiss "Zimmer": Swiss listings count \
   ALL rooms including the living room, so a typical "2-bedroom flat" in \
@@ -67,6 +68,9 @@ Rules:
   `soft.locality_hints` — NOT into `hard.city`. `hard.city` is for the \
   main city name (Bern, Lausanne, Zürich, Genf/Geneva, Basel, Lugano). \
   If the user names multiple districts, list them all in locality_hints.
+- NEVER use "temporary" as a hard feature — the dataset has no temporary \
+  listings. Treat short-term / furnished / temporary requests as soft \
+  preferences (set furnished=true in soft instead).
 - Set `language` to the query's primary language.
 - Provide `interpretation` in English as one short sentence the user would \
   recognize as "yes, that's what I meant".
@@ -144,8 +148,8 @@ def _tool_schema() -> dict[str, Any]:
                         },
                         "features": {
                             "type": "array",
-                            "items": {"type": "string", "enum": list(FEATURE_NAMES)},
-                            "description": "HARD required features only.",
+                            "items": {"type": "string", "enum": [f for f in FEATURE_NAMES if f != "temporary"]},
+                            "description": "HARD required features only. Never include 'temporary'.",
                         },
                         "offer_type": {
                             "type": "string",
@@ -276,15 +280,26 @@ def _cached_understand(query: str) -> QueryUnderstanding:
             )
 
     if settings.anthropic_api_key:
-        try:
-            with _call_lock:
-                return _understand_via_anthropic(query)
-        except Exception as exc:
-            logger.warning(
-                "Anthropic-direct query understanding failed, using heuristic. (%s)",
-                exc,
-                exc_info=False,
-            )
+        for attempt in range(5):
+            try:
+                with _call_lock:
+                    return _understand_via_anthropic(query)
+            except Exception as exc:
+                is_rate_limit = "rate_limit" in str(exc).lower() or "429" in str(exc)
+                if is_rate_limit and attempt < 4:
+                    wait = 15 * (attempt + 1)
+                    logger.warning(
+                        "Anthropic rate limit hit, retrying in %ds (attempt %d/5). (%s)",
+                        wait, attempt + 1, exc,
+                    )
+                    time.sleep(wait)
+                else:
+                    logger.warning(
+                        "Anthropic-direct query understanding failed, using heuristic. (%s)",
+                        exc,
+                        exc_info=False,
+                    )
+                    break
 
     return _heuristic_understand(query)
 
@@ -359,6 +374,96 @@ def _understand_via_bedrock(query: str) -> QueryUnderstanding:
     return _assemble_understanding(query=query, tool_input=tool_input, used_llm=True)
 
 
+# district/neighbourhood name (lowercase) → (canonical parent city, postal codes)
+_DISTRICT_MAP: dict[str, tuple[str, list[str]]] = {
+    # Zürich districts
+    "seefeld":        ("Zürich", ["8008"]),
+    "riesbach":       ("Zürich", ["8008"]),
+    "kreis 8":        ("Zürich", ["8008"]),
+    "wiedikon":       ("Zürich", ["8003"]),
+    "kreis 3":        ("Zürich", ["8003", "8036"]),
+    "aussersihl":     ("Zürich", ["8004"]),
+    "langstrasse":    ("Zürich", ["8004"]),
+    "kreis 4":        ("Zürich", ["8004"]),
+    "kreis 5":        ("Zürich", ["8005"]),
+    "escher wyss":    ("Zürich", ["8005"]),
+    "unterstrass":    ("Zürich", ["8006"]),
+    "oberstrass":     ("Zürich", ["8006"]),
+    "kreis 6":        ("Zürich", ["8006"]),
+    "fluntern":       ("Zürich", ["8044"]),
+    "hottingen":      ("Zürich", ["8032"]),
+    "hirslanden":     ("Zürich", ["8032"]),
+    "witikon":        ("Zürich", ["8053"]),
+    "kreis 7":        ("Zürich", ["8032", "8053"]),
+    "enge":           ("Zürich", ["8002"]),
+    "wollishofen":    ("Zürich", ["8038"]),
+    "leimbach":       ("Zürich", ["8041"]),
+    "kreis 2":        ("Zürich", ["8002", "8038"]),
+    "albisrieden":    ("Zürich", ["8047"]),
+    "altstetten":     ("Zürich", ["8048"]),
+    "kreis 9":        ("Zürich", ["8047", "8048"]),
+    "höngg":          ("Zürich", ["8049"]),
+    "höng":           ("Zürich", ["8049"]),
+    "wipkingen":      ("Zürich", ["8037"]),
+    "kreis 10":       ("Zürich", ["8037", "8049"]),
+    "affoltern":      ("Zürich", ["8046"]),
+    "oerlikon":       ("Zürich", ["8050"]),
+    "seebach":        ("Zürich", ["8052"]),
+    "kreis 11":       ("Zürich", ["8046", "8050", "8052"]),
+    "schwamendingen": ("Zürich", ["8051", "8052"]),
+    "hirzenbach":     ("Zürich", ["8051"]),
+    "kreis 12":       ("Zürich", ["8051", "8053"]),
+    "kreis 1":        ("Zürich", ["8001"]),
+    "city":           ("Zürich", ["8001"]),
+    "sihlfeld":       ("Zürich", ["8003"]),
+    "friesenberg":    ("Zürich", ["8055"]),
+    # Basel districts
+    "gundeldingen":   ("Basel", ["4053"]),
+    "iselin":         ("Basel", ["4053"]),
+    "st. johann":     ("Basel", ["4056"]),
+    "st johann":      ("Basel", ["4056"]),
+    "bruderholz":     ("Basel", ["4059"]),
+    "breite":         ("Basel", ["4054"]),
+    "matthäus":       ("Basel", ["4058"]),
+    "mattheus":       ("Basel", ["4058"]),
+    "kleinbasel":     ("Basel", ["4057", "4058"]),
+    # Geneva neighbourhoods
+    "champel":        ("Genève", ["1206"]),
+    "eaux-vives":     ("Genève", ["1207"]),
+    "eaux vives":     ("Genève", ["1207"]),
+    "jonction":       ("Genève", ["1205"]),
+    "plainpalais":    ("Genève", ["1205"]),
+    "pâquis":         ("Genève", ["1201"]),
+    "paquis":         ("Genève", ["1201"]),
+    "grottes":        ("Genève", ["1201"]),
+    "carouge":        ("Genève", ["1227"]),
+    "lancy":          ("Genève", ["1212"]),
+    # Lausanne neighbourhoods
+    "flon":           ("Lausanne", ["1004"]),
+    "sous-gare":      ("Lausanne", ["1004"]),
+    "ouchy":          ("Lausanne", ["1006"]),
+    "centre":         ("Lausanne", ["1003"]),
+}
+
+_CITY_ALIASES: dict[str, str] = {
+    "genf": "Genève",
+    "geneva": "Genève",
+    "zurich": "Zürich",
+    "zuerich": "Zürich",
+    "lucerne": "Luzern",
+    "biel": "Biel/Bienne",
+    "bienne": "Biel/Bienne",
+}
+
+
+def _normalize_city(city: str) -> str:
+    """Map English/dialect variants and district names to canonical DB city names."""
+    lower = city.strip().lower()
+    if lower in _DISTRICT_MAP:
+        return _DISTRICT_MAP[lower][0]
+    return _CITY_ALIASES.get(lower, city.strip())
+
+
 def _assemble_understanding(
     *,
     query: str,
@@ -369,6 +474,22 @@ def _assemble_understanding(
     soft_raw = dict(tool_input.get("soft") or {})
 
     hard = HardFilters(**{k: v for k, v in hard_raw.items() if v not in (None, [], "")})
+    if hard.city:
+        postal_codes: list[str] = []
+        normalized: list[str] = []
+        for c in hard.city:
+            lower = c.strip().lower()
+            if lower in _DISTRICT_MAP:
+                parent, codes = _DISTRICT_MAP[lower]
+                normalized.append(parent)
+                postal_codes.extend(codes)
+            else:
+                normalized.append(_normalize_city(c))
+        hard.city = list(dict.fromkeys(normalized))
+        # Apply postal filter only when all cities resolved to the same parent
+        # (prevents cross-city postal filter mismatches).
+        if postal_codes and len(set(hard.city)) == 1 and not hard.postal_code:
+            hard.postal_code = list(dict.fromkeys(postal_codes))
 
     anchors_raw = soft_raw.pop("anchors", []) or []
     anchors = [Anchor(**a) for a in anchors_raw if a.get("text")]
@@ -584,7 +705,7 @@ def _heuristic_understand(query: str) -> QueryUnderstanding:
 
     for city in _CITY_HINTS:
         if city in q:
-            canonical = city.title().replace("St ", "St. ")
+            canonical = _normalize_city(city.title().replace("St ", "St. "))
             hard.city = [canonical]
             canton = _CANTON_ALIAS.get(city)
             if canton:

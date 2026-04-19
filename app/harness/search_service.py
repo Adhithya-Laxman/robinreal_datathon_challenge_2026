@@ -136,6 +136,8 @@ def to_hard_filter_params(hard_facts: HardFilters) -> HardFilterParams:
         features=hard_facts.features,
         offer_type=hard_facts.offer_type,
         object_category=hard_facts.object_category,
+        include_exchange=getattr(hard_facts, "include_exchange", False),
+        include_sublet=getattr(hard_facts, "include_sublet", False),
         limit=hard_facts.limit,
         offset=hard_facts.offset,
         sort_by=hard_facts.sort_by,

@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from fastapi import APIRouter, Query
+from fastapi import APIRouter, Query, Request
 
 from app.config import get_settings
 from app.geo.poi import find_nearest_pois, load_poi_elements
@@ -35,10 +35,16 @@ def health() -> HealthResponse:
 
 
 @router.post("/listings", response_model=ListingsResponse)
-def listings(request: ListingsQueryRequest) -> ListingsResponse:
-    resp = unified_search(request.query, top_k=request.limit, use_vlm=True)
+def listings(body: ListingsQueryRequest, request: Request) -> ListingsResponse:
+    session_id = getattr(request.state, "session_id", None)
+    resp = unified_search(
+        body.query,
+        top_k=body.limit,
+        use_vlm=True,
+        session_id=session_id,
+    )
     results = []
-    for r in resp.results[request.offset:]:
+    for r in resp.results[body.offset:]:
         row = r.row
         top_signals = sorted(r.signals.items(), key=lambda t: -t[1] * r.weights.get(t[0], 0))[:3]
         reason = ", ".join(f"{k}={v:.2f}" for k, v in top_signals) or "unified score"
@@ -74,7 +80,13 @@ def listings(request: ListingsQueryRequest) -> ListingsResponse:
                 geo_university_m=row.get("geo_university_m"),
             ),
         ))
-    return ListingsResponse(listings=results, meta={"pipeline": "unified"})
+    return ListingsResponse(
+        listings=results,
+        meta={
+            "pipeline": "unified",
+            "feedback_applied": resp.feedback_applied,
+        },
+    )
 
 
 @router.get("/poi/nearby", response_model=dict)
