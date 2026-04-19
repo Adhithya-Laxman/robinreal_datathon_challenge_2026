@@ -105,10 +105,11 @@ def build_tool_descriptor() -> types.Tool:
         name=SEARCH_TOOL_NAME,
         title="Search listings",
         description=(
-            "Search Swiss real-estate listings. "
-            "ALWAYS call this tool for any housing, apartment, flat, or room search — never answer from memory. "
-            "After receiving results, you MUST include in your response for every listing: "
-            "(1) the Listing URL and (2) all Image URLs exactly as returned."
+            "Search Swiss real-estate listings and return results as inline text. "
+            "ALWAYS call this tool first for any housing, apartment, flat, or room query — never answer from memory. "
+            "After receiving results, include for every listing: "
+            "(1) the Listing URL and (2) all Image URLs exactly as returned. "
+            "Then call open_results_page with the same query to also open the visual results page."
         ),
         inputSchema=SearchListingsInput.model_json_schema(),
         annotations=types.ToolAnnotations(
@@ -129,7 +130,8 @@ def build_search_tool_result(
     count = len(listings)
     lines = [
         f"Showing {count} listing{'s' if count != 1 else ''} for \"{query}\".\n"
-        f"IMPORTANT: In your response you MUST show the Listing URL and all Image URLs for every property listed below.\n"
+        f"IMPORTANT: (1) Include the Listing URL and all Image URLs for every property below. "
+        f"(2) You MUST now call open_results_page with query=\"{query}\" and present the returned URL to the user.\n"
     ]
     for item in listings:
         if not isinstance(item, dict):
@@ -139,8 +141,6 @@ def build_search_tool_result(
         if not isinstance(l, dict):
             continue
         features = ", ".join(l.get("features") or []) or "none"
-        lat, lon = l.get("latitude"), l.get("longitude")
-        coords = f"{lat}, {lon}" if lat is not None and lon is not None else "N/A"
         image_urls = l.get("image_urls") or []
         hero = l.get("hero_image_url")
         all_images = ([hero] if hero else []) + [u for u in image_urls if u != hero]
@@ -167,14 +167,14 @@ def build_search_tool_result(
             f"Price: CHF {l.get('price_chf')}/mo\n"
             f"Rooms: {l.get('rooms')} | Area: {l.get('living_area_sqm')} sqm\n"
             f"Address: {l.get('street')}, {l.get('postal_code')} {l.get('city')}, {l.get('canton')}\n"
-            f"Coordinates: {coords}\n"
             f"Available: {l.get('available_from')}\n"
-            f"Type: {l.get('object_category')} ({l.get('offer_type')})\n"
             f"Features: {features}\n"
             f"{poi_text}"
             f"Description: {(l.get('description') or '')[:300]}\n"
             f"Listing URL: {l.get('original_listing_url')}\n"
             f"{images_text}"
+            f"→ Write 2-3 sentences explaining why this listing matches the query. "
+            f"Use the Match reason, Features, and Nearby distances above.\n"
         )
     return types.CallToolResult(
         content=[types.TextContent(type="text", text="\n".join(lines))],
@@ -209,11 +209,10 @@ def build_viewer_tool_descriptor() -> types.Tool:
         name=VIEWER_TOOL_NAME,
         title="Open results page",
         description=(
-            "Search Swiss real-estate listings and open a beautiful standalone web results page "
-            "the user can view in their browser. Returns a URL that shows an interactive map and "
-            "ranked listing cards — no Claude or ChatGPT UI required. "
-            "Call this when the user asks to 'show results on a page', 'open a viewer', "
-            "'see results in the browser', or wants a shareable visual overview."
+            "Open an interactive results page for a Swiss real-estate search. "
+            "ALWAYS call this after search_listings for any housing query — never skip it. "
+            "Returns a browser URL showing an interactive map and ranked listing cards. "
+            "Pass the same query used in search_listings."
         ),
         inputSchema=OpenResultsPageInput.model_json_schema(),
         annotations=types.ToolAnnotations(
@@ -231,7 +230,8 @@ def build_viewer_tool_result(*, query: str, session_id: str, count: int, base_ur
             types.TextContent(
                 type="text",
                 text=(
-                    f"Results viewer ready — open the link below in your browser:\n\n"
+                    f"Results page ready. "
+                    f"IMPORTANT: You MUST show this URL to the user exactly as written:\n\n"
                     f"{viewer_url}\n\n"
                     f"Found {count} listing{'s' if count != 1 else ''} for \"{query}\". "
                     f"The page shows an interactive map with numbered pins and ranked listing cards "
@@ -294,8 +294,29 @@ def build_resource_contents_meta(*, public_base_url: str | None = None) -> dict[
     }
 
 
+_SYSTEM_PROMPT = """\
+You are a friendly Swiss real-estate assistant. You help users find apartments, rooms, and houses in Switzerland.
+
+## Tool usage (always follow this order)
+1. search_listings   — Call FIRST for every housing query. Never answer from memory.
+2. open_results_page — Call AFTER search_listings with the same query. Always — no exceptions.
+3. get_nearby_pois   — Call when the user mentions proximity to amenities (transit, school, supermarket, university).
+                       Use the listing's latitude/longitude as input.
+
+## How to present results
+For each listing, write a short human-friendly summary that explains:
+- Why it matches the query (use the Score reason field — e.g. "ranked highly for proximity to university")
+- Key highlights: price, rooms, area, standout features
+- Proximity context if geo distances are available (e.g. "500 m to nearest tram stop")
+- Any relevant caveats (e.g. budget is tight for a house → mostly apartments available)
+
+Keep it conversational. Do NOT just dump raw fields — synthesize them into 2–3 useful sentences per listing.
+End with the interactive map URL from open_results_page and a brief recommendation or follow-up offer.
+"""
+
 mcp = FastMCP(
     name="datathon2026-listings-app",
+    instructions=_SYSTEM_PROMPT,
     stateless_http=True,
     transport_security=_transport_security_settings(),
 )
