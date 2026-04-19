@@ -64,7 +64,7 @@ class SoftPreferences(BaseModel):
     the signals linearly using these weights as a starting point.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     # Free-text soft hints the LLM pulled out, verbatim. Used for semantic
     # retrieval (embedding + BM25).

@@ -31,6 +31,8 @@ class HardFilterParams:
     features: list[str] | None = None
     offer_type: str | None = None
     object_category: list[str] | None = None
+    include_exchange: bool = False
+    include_sublet: bool = False
     limit: int = 20
     offset: int = 0
     sort_by: str | None = None
@@ -65,9 +67,11 @@ def search_listings(db_path: Path, filters: HardFilterParams) -> list[dict[str, 
 
     city = _normalize_list(filters.city)
     if city:
-        placeholders = ", ".join("?" for _ in city)
-        where_clauses.append(f"LOWER(city) IN ({placeholders})")
-        params.extend(value.lower() for value in city)
+        # Match both exact ("Carouge") and canton-suffixed ("Carouge GE") variants.
+        city_conds = ["(LOWER(city) = ? OR LOWER(city) LIKE ?)" for _ in city]
+        where_clauses.append("(" + " OR ".join(city_conds) + ")")
+        for c in city:
+            params.extend([c.lower(), c.lower() + " %"])
 
     postal_code = _normalize_list(filters.postal_code)
     if postal_code:
@@ -125,6 +129,34 @@ def search_listings(db_path: Path, filters: HardFilterParams) -> list[dict[str, 
             f"(object_category IN ({placeholders}) OR object_category IS NULL)"
         )
         params.extend(object_category)
+    else:
+        # Exclude non-residential categories unless explicitly requested.
+        # NULL category listings are kept (large portion of the dataset).
+        _NON_RESIDENTIAL = (
+            "Gewerbeobjekt", "Parkplatz", "Parkplatz, Garage",
+            "Tiefgarage", "Einzelgarage", "Bastelraum",
+            "Wohnnebenraeume", "Gastgewerbe", "Grundstück",
+            "Ferienimmobilie",
+        )
+        placeholders = ", ".join("?" for _ in _NON_RESIDENTIAL)
+        where_clauses.append(
+            f"(object_category IS NULL OR object_category NOT IN ({placeholders}))"
+        )
+        params.extend(_NON_RESIDENTIAL)
+
+    if not filters.include_exchange:
+        where_clauses.append(
+            "LOWER(COALESCE(title,'')) NOT LIKE '%tausch%' "
+            "AND LOWER(COALESCE(title,'')) NOT LIKE '%swap%'"
+        )
+
+    if not filters.include_sublet:
+        where_clauses.append(
+            "LOWER(COALESCE(title,'')) NOT LIKE '%untermiete%' "
+            "AND LOWER(COALESCE(title,'')) NOT LIKE '%sublet%' "
+            "AND LOWER(COALESCE(title,'')) NOT LIKE '%sous-loc%' "
+            "AND LOWER(COALESCE(title,'')) NOT LIKE '%subaffitto%'"
+        )
 
     features = _normalize_list(filters.features)
     if features:

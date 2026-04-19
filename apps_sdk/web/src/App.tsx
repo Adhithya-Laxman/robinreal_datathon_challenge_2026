@@ -96,6 +96,7 @@ export default function App() {
   }, []);
 
   const results = toolOutput.listings ?? [];
+  const feedbackApplied = Boolean(toolOutput.meta?.feedback_applied);
 
   useEffect(() => {
     if (!results.length) {
@@ -125,6 +126,9 @@ export default function App() {
               ? `${results.length} result${results.length === 1 ? "" : "s"}`
               : "No results yet"}
           </p>
+          {feedbackApplied && (
+            <p className="feedback-banner">Updated based on your clicks</p>
+          )}
         </div>
         <ResultsImageStrip
           results={results}

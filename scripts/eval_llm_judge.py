@@ -249,15 +249,13 @@ class QueryEvalRecord:
     error: str = ""
 
 
-def _evaluate_one_query(
+def _run_pipeline(
     q_record: dict[str, Any],
     *,
     top_k: int,
     use_vlm: bool,
-    judge_client,
-    judge_model: str,
-    judge_parallelism: int,
 ) -> QueryEvalRecord:
+    """Run only the search pipeline; judging happens separately."""
     query = q_record["query"]
     lang = q_record.get("language", "?")
     rec = QueryEvalRecord(
@@ -283,9 +281,137 @@ def _evaluate_one_query(
 
     if not rec.results:
         rec.error = "pipeline returned 0 results"
+    return rec
+
+
+def _finalize_record(rec: QueryEvalRecord) -> None:
+    """Compute per-query metrics from already-populated judge_scores."""
+    ok_scores = [js.score for js in rec.judge_scores if js.ok]
+    if ok_scores:
+        rec.mean_score = statistics.mean(ok_scores)
+        rec.pct_relevant_ge3 = sum(1 for s in ok_scores if s >= 3) / len(ok_scores)
+        rec.pct_strong_ge4 = sum(1 for s in ok_scores if s >= 4) / len(ok_scores)
+        rec.ndcg_at_k = _ndcg(ok_scores)
+
+
+# ---------------------------------------------------------------- batch judging
+
+def _build_batch_requests(
+    records: list[QueryEvalRecord],
+    judge_model: str,
+) -> tuple[list[dict[str, Any]], dict[str, tuple[int, int]]]:
+    """Return (batch_request_list, custom_id -> (rec_idx, res_idx))."""
+    requests: list[dict[str, Any]] = []
+    id_map: dict[str, tuple[int, int]] = {}
+    for rec_idx, rec in enumerate(records):
+        if rec.error:
+            continue
+        for res_idx, res in enumerate(rec.results):
+            custom_id = f"{rec_idx}_{res_idx}"
+            blob = _format_listing_for_judge(res)
+            user_msg = (
+                f"User query:\n{rec.query}\n\n"
+                f"Candidate listing:\n{blob}\n\n"
+                "Call rate_listing with score (0..5) and a brief reason."
+            )
+            requests.append({
+                "custom_id": custom_id,
+                "params": {
+                    "model": judge_model,
+                    "max_tokens": 256,
+                    "temperature": 0.0,
+                    "system": _JUDGE_SYSTEM,
+                    "tools": [_JUDGE_TOOL],
+                    "tool_choice": {"type": "tool", "name": _JUDGE_TOOL["name"]},
+                    "messages": [{"role": "user", "content": user_msg}],
+                },
+            })
+            id_map[custom_id] = (rec_idx, res_idx)
+    return requests, id_map
+
+
+def _poll_batch(client, batch_id: str, poll_interval: int = 30) -> Any:
+    """Poll until the batch leaves in_progress; return the final batch object."""
+    while True:
+        batch = client.messages.batches.retrieve(batch_id)
+        counts = batch.request_counts
+        print(
+            f"[eval] batch {batch_id} — status={batch.processing_status} "
+            f"processing={counts.processing} succeeded={counts.succeeded} "
+            f"errored={counts.errored}",
+            flush=True,
+        )
+        if batch.processing_status != "in_progress":
+            return batch
+        time.sleep(poll_interval)
+
+
+def _collect_batch_scores(
+    client,
+    batch_id: str,
+    records: list[QueryEvalRecord],
+    id_map: dict[str, tuple[int, int]],
+) -> None:
+    """Stream batch results and attach JudgeScore objects to records in-place."""
+    scores_by_rec: dict[int, list[JudgeScore]] = defaultdict(list)
+
+    for result in client.messages.batches.results(batch_id):
+        mapping = id_map.get(result.custom_id)
+        if mapping is None:
+            continue
+        rec_idx, res_idx = mapping
+        rec = records[rec_idx]
+        res = rec.results[res_idx]
+
+        if result.result.type == "succeeded":
+            score, reason = 0, ""
+            for block in result.result.message.content:
+                if (
+                    getattr(block, "type", None) == "tool_use"
+                    and block.name == _JUDGE_TOOL["name"]
+                ):
+                    payload = dict(block.input or {})
+                    score = int(payload.get("score", 0))
+                    reason = str(payload.get("reason", ""))[:250]
+                    break
+            js = JudgeScore(
+                listing_id=str(res.get("listing_id") or res_idx),
+                rank=res_idx + 1,
+                final_score=float(res.get("final_score") or 0.0),
+                score=score, reason=reason, ok=True,
+            )
+        else:
+            err_msg = str(getattr(result.result, "error", "batch error"))
+            js = JudgeScore(
+                listing_id=str(res.get("listing_id") or res_idx),
+                rank=res_idx + 1,
+                final_score=float(res.get("final_score") or 0.0),
+                score=0, reason="", ok=False, error=err_msg,
+            )
+        scores_by_rec[rec_idx].append(js)
+
+    for rec_idx, scores in scores_by_rec.items():
+        records[rec_idx].judge_scores = sorted(scores, key=lambda js: js.rank)
+        _finalize_record(records[rec_idx])
+
+
+# ---------------------------------------------------------------- legacy path (--no-batch)
+
+def _evaluate_one_query(
+    q_record: dict[str, Any],
+    *,
+    top_k: int,
+    use_vlm: bool,
+    judge_client,
+    judge_model: str,
+    judge_parallelism: int,
+) -> QueryEvalRecord:
+    rec = _run_pipeline(q_record, top_k=top_k, use_vlm=use_vlm)
+    if rec.error:
         return rec
 
-    # --- judge each result in parallel ---------------------------------
+    query = rec.query
+
     def _task(idx_and_res):
         idx, res = idx_and_res
         blob = _format_listing_for_judge(res)
@@ -302,13 +428,7 @@ def _evaluate_one_query(
     with cf.ThreadPoolExecutor(max_workers=judge_parallelism) as ex:
         rec.judge_scores = list(ex.map(_task, enumerate(rec.results)))
 
-    ok_scores = [js.score for js in rec.judge_scores if js.ok]
-    if ok_scores:
-        rec.mean_score = statistics.mean(ok_scores)
-        rec.pct_relevant_ge3 = sum(1 for s in ok_scores if s >= 3) / len(ok_scores)
-        rec.pct_strong_ge4 = sum(1 for s in ok_scores if s >= 4) / len(ok_scores)
-        # nDCG using the judge score as the graded relevance.
-        rec.ndcg_at_k = _ndcg(ok_scores)
+    _finalize_record(rec)
     return rec
 
 
@@ -437,11 +557,14 @@ def _parse_args() -> argparse.Namespace:
                    help="Anthropic model id used as judge "
                         "(default: claude-haiku-4-5-20251001; "
                         "use claude-sonnet-4-5 for stronger but slower judge)")
-    p.add_argument("--query-parallelism", type=int, default=1,
-                   help="run N queries in parallel (each query ALSO uses "
-                        "--judge-parallelism for its K judgments)")
+    p.add_argument("--query-parallelism", type=int, default=4,
+                   help="parallel workers for the search pipeline phase (default: 4)")
     p.add_argument("--judge-parallelism", type=int, default=5,
-                   help="how many top-K judgments per query to run in parallel")
+                   help="(--no-batch only) parallel judge calls per query")
+    p.add_argument("--no-batch", action="store_true",
+                   help="disable Message Batches API and fall back to live judge calls")
+    p.add_argument("--poll-interval", type=int, default=30,
+                   help="seconds between batch status polls (default: 30)")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--out", type=Path, default=None,
                    help="output JSON path (default: results/eval/judge_<ts>.json)")
@@ -468,32 +591,85 @@ def main() -> int:
     lang_hist = Counter(q.get("language", "?") for q in pool)
     print(f"[eval] language distribution: {dict(lang_hist)}")
     print(f"[eval] top_k={args.top_k}  vlm={args.vlm}  judge={args.judge_model}")
-    print(f"[eval] query_parallelism={args.query_parallelism}  "
-          f"judge_parallelism={args.judge_parallelism}")
+    mode = "live (--no-batch)" if args.no_batch else "Message Batches API"
+    print(f"[eval] judge mode={mode}  query_parallelism={args.query_parallelism}")
 
     t0 = time.time()
+
+    # ------------------------------------------------------------------
+    # Phase 1: run search pipeline for all queries
+    # ------------------------------------------------------------------
+    print(f"\n[eval] Phase 1/3 — running search pipeline ({len(pool)} queries)…")
     records: list[QueryEvalRecord] = []
 
-    def _run(q):
-        return _evaluate_one_query(
-            q,
-            top_k=args.top_k,
-            use_vlm=args.vlm,
-            judge_client=judge_client,
-            judge_model=args.judge_model,
-            judge_parallelism=args.judge_parallelism,
-        )
+    def _run_pipe(q):
+        return _run_pipeline(q, top_k=args.top_k, use_vlm=args.vlm)
+
+    def _log_pipeline(i: int, rec: QueryEvalRecord) -> None:
+        status = "[ERR]" if rec.error else "[OK ]"
+        tail = f" | {rec.error}" if rec.error else ""
+        print(f"  [{i:3d}/{len(pool)}] {status} {rec.language} | "
+              f"{rec.query[:60]}…{tail}")
 
     if args.query_parallelism > 1:
         with cf.ThreadPoolExecutor(max_workers=args.query_parallelism) as ex:
-            for i, rec in enumerate(ex.map(_run, pool), 1):
+            for i, rec in enumerate(ex.map(_run_pipe, pool), 1):
                 records.append(rec)
-                _print_progress(i, len(pool), rec)
+                _log_pipeline(i, rec)
     else:
         for i, q in enumerate(pool, 1):
-            rec = _run(q)
+            rec = _run_pipe(q)
             records.append(rec)
-            _print_progress(i, len(pool), rec)
+            _log_pipeline(i, rec)
+
+    ok_count = sum(1 for r in records if not r.error)
+    print(f"[eval] pipeline done: {ok_count}/{len(records)} succeeded")
+
+    # ------------------------------------------------------------------
+    # Phase 2 & 3: judge
+    # ------------------------------------------------------------------
+    if args.no_batch:
+        # Legacy: live judge calls per query
+        print(f"\n[eval] Phase 2/3 — judging (live, parallelism={args.judge_parallelism})…")
+        for i, rec in enumerate(records, 1):
+            if rec.error:
+                _print_progress(i, len(records), rec)
+                continue
+            query = rec.query
+
+            def _task(idx_and_res, _q=query):
+                idx, res = idx_and_res
+                blob = _format_listing_for_judge(res)
+                s, reason, ok, err = _call_judge(
+                    judge_client, model=args.judge_model,
+                    query=_q, listing_blob=blob,
+                )
+                return JudgeScore(
+                    listing_id=str(res.get("listing_id") or idx),
+                    rank=idx + 1,
+                    final_score=float(res.get("final_score") or 0.0),
+                    score=s, reason=reason, ok=ok, error=err,
+                )
+
+            with cf.ThreadPoolExecutor(max_workers=args.judge_parallelism) as ex:
+                rec.judge_scores = list(ex.map(_task, enumerate(rec.results)))
+            _finalize_record(rec)
+            _print_progress(i, len(records), rec)
+    else:
+        # Batch API: submit all judge calls at once
+        print(f"\n[eval] Phase 2/3 — building batch requests…")
+        batch_requests, id_map = _build_batch_requests(records, args.judge_model)
+        print(f"[eval] submitting {len(batch_requests)} judge calls as one batch…")
+        batch = judge_client.messages.batches.create(requests=batch_requests)
+        print(f"[eval] batch id={batch.id}  (poll every {args.poll_interval}s)")
+
+        print(f"\n[eval] Phase 3/3 — polling for batch completion…")
+        _poll_batch(judge_client, batch.id, poll_interval=args.poll_interval)
+
+        print(f"[eval] collecting results…")
+        _collect_batch_scores(judge_client, batch.id, records, id_map)
+        for i, rec in enumerate(records, 1):
+            _print_progress(i, len(records), rec)
 
     elapsed = time.time() - t0
     print(f"\n[eval] done in {elapsed:.1f}s")

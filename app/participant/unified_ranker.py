@@ -44,10 +44,15 @@ from typing import Any
 import numpy as np
 
 from app.config import get_settings
+from app.harness.events import get_recent_clicks
 from app.harness.search_service import filter_hard_facts
 from app.models.schemas import HardFilters
 from app.participant.bm25_index import detect_lang, index_exists, load_index
-from app.participant.embeddings import search_by_query_text
+from app.participant.embeddings import (
+    embed_query,
+    fetch_embeddings_by_ids,
+    search_by_query_text,
+)
 from app.participant.hard_fact_extraction import extract_hard_facts
 from app.participant.listing_quality import apply_post_filter
 from app.participant.query_understanding import understand
@@ -247,6 +252,7 @@ class UnifiedResponse:
     results: list[UnifiedResult]
     stages: list[StageStatus] = field(default_factory=list)
     llm_weight_hints: dict[str, float] = field(default_factory=dict)
+    feedback_applied: bool = False
 
     def to_dict(self) -> dict[str, Any]:
         """Comprehensive JSON-serializable dump of the entire pipeline run."""
@@ -289,6 +295,9 @@ class UnifiedResponse:
 # --------------------------------------------------------------------------- #
 
 
+_FEEDBACK_BLEND_WEIGHT = 0.20  # clicked-listing vector contribution
+
+
 def unified_search(
     query: str,
     *,
@@ -297,6 +306,7 @@ def unified_search(
     use_vlm: bool = False,
     vlm_shards_dir: Path | None = None,
     override_weights: dict[str, float] | None = None,
+    session_id: str | None = None,
 ) -> UnifiedResponse:
     """Run the full hybrid pipeline for `query` and return top-k ranked listings.
 
@@ -316,6 +326,9 @@ def unified_search(
         Override for the shards location.
     override_weights:
         Dict partially overriding the default weights. Useful for A/B tuning.
+    session_id:
+        If provided, clicked listings from this session are used to blend the
+        query embedding (20% feedback, 80% original query).
     """
     db_path = db_path or get_settings().db_path
     stages: list[StageStatus] = []
@@ -420,8 +433,34 @@ def unified_search(
                 "no geo_* columns in DB - run scripts/geo_enrich.py"),
     ))
 
-    # --- Stage 3: text scoring (dense + bm25 + lang_match) -----------------
-    dense_scores, dense_status = _score_dense(query, cand_ids)
+    # --- Stage 3: text scoring (dense + bm25 + lang_match) ------------------
+    # Optional: blend query embedding with mean of clicked-listing embeddings.
+    feedback_qvec: np.ndarray | None = None
+    feedback_applied = False
+    if session_id:
+        try:
+            clicked_ids = get_recent_clicks(session_id, n=10, db_path=db_path)
+            if clicked_ids:
+                feedback_vecs = fetch_embeddings_by_ids(clicked_ids, db_path)
+                if feedback_vecs.shape[0] > 0:
+                    q_raw = embed_query(query)
+                    blended = (
+                        (1.0 - _FEEDBACK_BLEND_WEIGHT) * q_raw
+                        + _FEEDBACK_BLEND_WEIGHT * feedback_vecs.mean(axis=0)
+                    )
+                    norm = np.linalg.norm(blended)
+                    if norm > 0:
+                        feedback_qvec = (blended / norm).astype(np.float32)
+                        feedback_applied = True
+                        logger.info(
+                            "[feedback] blended query vec from %d clicked listings "
+                            "(session=%s)",
+                            feedback_vecs.shape[0], session_id,
+                        )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[feedback] blend failed, using raw query: %s", exc)
+
+    dense_scores, dense_status = _score_dense(query, cand_ids, query_vec=feedback_qvec)
     stages.append(dense_status)
     bm25_scores, bm25_status = _score_bm25(query, cand_ids, lang=qu.language)
     stages.append(bm25_status)
@@ -524,10 +563,17 @@ def unified_search(
         "lang_match":  lang_scores,
     }
 
+    _ROOM_QUERY_SIGNALS = {"wg", "zimmer", "room", "chambre", "camera", "coloc"}
+    wants_room = any(w in query.lower() for w in _ROOM_QUERY_SIGNALS)
+
     results: list[UnifiedResult] = []
     for lid in cand_ids:
         signals = {k: per_signal[k].get(lid, 0.0) for k in per_signal}
         score = sum(signals[k] * weights.get(k, 0.0) for k in signals)
+        # Soft-downrank WG-Zimmer / Einzelzimmer unless the query is for a room.
+        cat = (rows_by_id[lid].get("object_category") or "")
+        if not wants_room and cat in ("WG-Zimmer", "Einzelzimmer"):
+            score *= 0.4
         results.append(UnifiedResult(
             listing_id=lid,
             score=score,
@@ -546,6 +592,7 @@ def unified_search(
         results=results[:top_k],
         stages=stages,
         llm_weight_hints=dict(soft.weights),
+        feedback_applied=feedback_applied,
     )
 
 
@@ -566,10 +613,17 @@ def _normalize(scores: dict[str, float]) -> dict[str, float]:
 
 
 def _score_dense(
-    query: str, cand_ids: list[str],
+    query: str,
+    cand_ids: list[str],
+    query_vec: np.ndarray | None = None,
 ) -> tuple[dict[str, float], StageStatus]:
     try:
-        hits = search_by_query_text(query, top_k=len(cand_ids), candidate_ids=cand_ids)
+        hits = search_by_query_text(
+            query,
+            top_k=len(cand_ids),
+            candidate_ids=cand_ids,
+            query_vec=query_vec,
+        )
     except Exception as exc:  # noqa: BLE001 - defensive: embeddings are optional
         logger.warning("Dense scoring disabled: %s", exc)
         return {}, StageStatus(name="dense", state="error", detail=str(exc))
