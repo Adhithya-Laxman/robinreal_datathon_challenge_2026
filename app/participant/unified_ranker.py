@@ -371,7 +371,7 @@ def unified_search(
     # --- Stage 3: text scoring (dense + bm25 + lang_match) -----------------
     dense_scores, dense_status = _score_dense(query, cand_ids)
     stages.append(dense_status)
-    bm25_scores, bm25_status = _score_bm25(query, cand_ids)
+    bm25_scores, bm25_status = _score_bm25(query, cand_ids, lang=qu.language)
     stages.append(bm25_status)
     lang_scores = _score_lang_match(qu.language, rows_by_id)
     stages.append(StageStatus(
@@ -533,7 +533,7 @@ def _score_dense(
 
 
 def _score_bm25(
-    query: str, cand_ids: list[str],
+    query: str, cand_ids: list[str], lang: str = "de",
 ) -> tuple[dict[str, float], StageStatus]:
     if not index_exists():
         logger.warning("BM25 index not found; bm25 signal = 0")
@@ -543,7 +543,7 @@ def _score_bm25(
         )
     try:
         idx = load_index()
-        hits = idx.search(query, top_k=len(cand_ids), candidate_ids=cand_ids)
+        hits = idx.search(query, top_k=len(cand_ids), candidate_ids=cand_ids, lang=lang)
     except Exception as exc:  # noqa: BLE001
         logger.warning("BM25 scoring disabled: %s", exc)
         return {}, StageStatus(name="bm25", state="error", detail=str(exc))
