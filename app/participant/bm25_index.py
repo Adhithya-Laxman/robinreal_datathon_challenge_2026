@@ -61,14 +61,56 @@ _STOPWORDS: frozenset[str] = frozenset(
 
 _TOKEN_RE = re.compile(r"[\w\u00C0-\u024F]+", re.UNICODE)
 
-# Single stemmer instance reused across threads — snowballstemmer stemmers
-# are not documented as thread-safe, so we guard with a lock.
-_stemmer = snowballstemmer.stemmer("german")
+# Language-keyword sets used for heuristic detection (see detect_lang).
+_LANG_KEYWORDS: dict[str, frozenset[str]] = {
+    "de": frozenset(["der", "die", "das", "und", "mit", "ist", "eine", "nicht", "für", "bei", "im", "am", "zum"]),
+    "fr": frozenset(["les", "des", "pour", "dans", "avec", "est", "qui", "une", "sur", "pas", "par", "du", "au"]),
+    "it": frozenset(["con", "nel", "per", "del", "della", "sono", "una", "gli", "che", "dal", "alle", "dei", "si"]),
+    "en": frozenset(["the", "and", "for", "with", "this", "that", "are", "not", "from", "have", "apartment", "rent"]),
+}
+_LANG_CHARS: dict[str, frozenset[str]] = {
+    "de": frozenset("äöüß"),
+    "fr": frozenset("éèêëàâùûîôçœ"),
+    "it": frozenset("àèìîòùú"),
+}
+
+_SNOWBALL_LANG: dict[str, str] = {
+    "de": "german", "fr": "french", "it": "italian", "en": "english",
+}
+
+# Lazily-constructed per-language stemmers, all guarded by one lock
+# (snowballstemmer is not documented as thread-safe).
+_stemmers: dict[str, snowballstemmer.stemmer] = {
+    "de": snowballstemmer.stemmer("german"),
+}
 _stemmer_lock = threading.Lock()
 
 
-def tokenize(text: str) -> list[str]:
-    """Multilingual-ish tokenizer: lowercase, split on non-word, stem with DE."""
+def _get_stemmer(lang: str) -> snowballstemmer.stemmer:
+    if lang not in _stemmers:
+        _stemmers[lang] = snowballstemmer.stemmer(_SNOWBALL_LANG.get(lang, "german"))
+    return _stemmers[lang]
+
+
+def detect_lang(text: str) -> str:
+    """Heuristic language detection (de/fr/it/en) without external libraries.
+
+    Uses character markers and common-word frequency. Defaults to 'de'
+    (most common in Swiss listings) when ambiguous.
+    """
+    lower = text.lower()
+    words = frozenset(_TOKEN_RE.findall(lower))
+    word_scores = {lang: len(words & kws) for lang, kws in _LANG_KEYWORDS.items()}
+    char_scores = {lang: sum(lower.count(c) for c in chars)
+                   for lang, chars in _LANG_CHARS.items()}
+    total = {lang: word_scores[lang] * 3 + char_scores.get(lang, 0)
+             for lang in _LANG_KEYWORDS}
+    best = max(total, key=total.get)
+    return best if total[best] > 0 else "de"
+
+
+def tokenize(text: str, lang: str = "de") -> list[str]:
+    """Multilingual tokenizer: lowercase, split on non-word chars, language-specific stem."""
     if not text:
         return []
     tokens = [t.lower() for t in _TOKEN_RE.findall(text) if len(t) > 1]
@@ -78,7 +120,7 @@ def tokenize(text: str) -> list[str]:
     if not filtered:
         return []
     with _stemmer_lock:
-        return _stemmer.stemWords(filtered)
+        return _get_stemmer(lang).stemWords(filtered)
 
 
 # ---- Index on-disk format ------------------------------------------------
@@ -90,8 +132,8 @@ class BM25Index:
     bm25: BM25Okapi
     avg_doc_len: float
 
-    def score_query(self, query: str) -> np.ndarray:
-        tokens = tokenize(query)
+    def score_query(self, query: str, lang: str = "de") -> np.ndarray:
+        tokens = tokenize(query, lang)
         if not tokens:
             return np.zeros(len(self.listing_ids), dtype=np.float32)
         return np.asarray(self.bm25.get_scores(tokens), dtype=np.float32)
@@ -102,8 +144,9 @@ class BM25Index:
         *,
         top_k: int = 50,
         candidate_ids: Iterable[str] | None = None,
+        lang: str = "de",
     ) -> list[tuple[str, float]]:
-        scores = self.score_query(query)
+        scores = self.score_query(query, lang)
         if candidate_ids is not None:
             wanted = set(candidate_ids)
             mask = np.array([lid in wanted for lid in self.listing_ids], dtype=bool)
@@ -132,7 +175,7 @@ def default_index_path() -> Path:
 
 
 def build_index(listing_ids: Sequence[str], documents: Sequence[str]) -> BM25Index:
-    tokenized = [tokenize(doc) for doc in documents]
+    tokenized = [tokenize(doc, detect_lang(doc)) for doc in documents]
     bm25 = BM25Okapi(tokenized)
     lengths = [len(t) for t in tokenized]
     avg = float(np.mean(lengths)) if lengths else 0.0

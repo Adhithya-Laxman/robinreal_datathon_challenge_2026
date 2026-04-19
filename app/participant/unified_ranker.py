@@ -46,7 +46,7 @@ import numpy as np
 from app.config import get_settings
 from app.harness.search_service import filter_hard_facts
 from app.models.schemas import HardFilters
-from app.participant.bm25_index import index_exists, load_index
+from app.participant.bm25_index import detect_lang, index_exists, load_index
 from app.participant.embeddings import search_by_query_text
 from app.participant.hard_fact_extraction import extract_hard_facts
 from app.participant.listing_quality import apply_post_filter
@@ -74,6 +74,7 @@ _SIGNAL_DEFAULTS: dict[str, tuple[float, bool]] = {
     "geo_school":  (0.05, False),  # gated on near_schools / family_friendly
     "geo_anchor":  (0.15, False),  # gated on soft.anchors (ETH, station, ...)
     "price_band":  (0.10, False),  # gated on price_intent
+    "lang_match":  (0.05, False),  # gated on known query language
 }
 
 # Distance scale (meters) for exp(-d / tau) geo-proximity scoring.
@@ -100,6 +101,7 @@ _LLM_WEIGHT_KEY_MAP: dict[str, str] = {
     "geo_anchor":    "geo_anchor",
     # Price intent.
     "price_band":    "price_band",
+    "lang_match":    "lang_match",
     # Not yet implemented signals are ignored (but logged).
     # "feature_match", "freshness"
 }
@@ -418,11 +420,18 @@ def unified_search(
                 "no geo_* columns in DB - run scripts/geo_enrich.py"),
     ))
 
-    # --- Stage 3: text scoring (dense + bm25) ------------------------------
+    # --- Stage 3: text scoring (dense + bm25 + lang_match) -----------------
     dense_scores, dense_status = _score_dense(query, cand_ids)
     stages.append(dense_status)
-    bm25_scores, bm25_status = _score_bm25(query, cand_ids)
+    bm25_scores, bm25_status = _score_bm25(query, cand_ids, lang=qu.language)
     stages.append(bm25_status)
+    lang_scores = _score_lang_match(qu.language, rows_by_id)
+    stages.append(StageStatus(
+        name="lang_match",
+        state="ok" if lang_scores else "skipped",
+        detail=f"query_lang={qu.language}",
+        scored=len(lang_scores),
+    ))
 
     # --- Stage 4: VLM (optional) -------------------------------------------
     vlm_scores: dict[str, float] = {}
@@ -495,6 +504,7 @@ def unified_search(
         soft=soft,
         vlm_active=bool(vlm_scores),
         override=override_weights or {},
+        query_lang=qu.language,
     )
     stages.append(StageStatus(
         name="weight_resolution",
@@ -511,6 +521,7 @@ def unified_search(
         "geo_school":  geo_school_scores,
         "geo_anchor":  geo_anchor_scores,
         "price_band":  price_scores,
+        "lang_match":  lang_scores,
     }
 
     results: list[UnifiedResult] = []
@@ -574,7 +585,7 @@ def _score_dense(
 
 
 def _score_bm25(
-    query: str, cand_ids: list[str],
+    query: str, cand_ids: list[str], lang: str = "de",
 ) -> tuple[dict[str, float], StageStatus]:
     if not index_exists():
         logger.warning("BM25 index not found; bm25 signal = 0")
@@ -584,7 +595,7 @@ def _score_bm25(
         )
     try:
         idx = load_index()
-        hits = idx.search(query, top_k=len(cand_ids), candidate_ids=cand_ids)
+        hits = idx.search(query, top_k=len(cand_ids), candidate_ids=cand_ids, lang=lang)
     except Exception as exc:  # noqa: BLE001
         logger.warning("BM25 scoring disabled: %s", exc)
         return {}, StageStatus(name="bm25", state="error", detail=str(exc))
@@ -596,6 +607,27 @@ def _score_bm25(
         scored=len(scores),
         detail=f"matched {len(scores)}/{len(cand_ids)} candidates",
     )
+
+
+def _score_lang_match(
+    query_lang: str,
+    rows: dict[str, dict[str, Any]],
+) -> dict[str, float]:
+    """Score 1.0 if listing language matches query language, 0.0 otherwise.
+
+    Listing language is detected at rank time from title + description text.
+    Returns empty dict when query language is unknown (signal inactive).
+    """
+    if query_lang == "unknown":
+        return {}
+    raw: dict[str, float] = {}
+    for lid, r in rows.items():
+        text = " ".join(filter(None, [r.get("title"), r.get("description")]))
+        if not text:
+            raw[lid] = 0.5  # no text → neutral
+            continue
+        raw[lid] = 1.0 if detect_lang(text) == query_lang else 0.0
+    return _normalize(raw)
 
 
 def _build_vlm_prompt(query: str, soft: SoftPreferences) -> str | None:
@@ -817,6 +849,7 @@ def _resolve_weights(
     soft: SoftPreferences,
     vlm_active: bool,
     override: dict[str, float],
+    query_lang: str = "unknown",
 ) -> tuple[dict[str, float], str]:
     """Decide each signal's weight based on query intent.
 
@@ -838,7 +871,7 @@ def _resolve_weights(
     for key, (default, always_on) in _SIGNAL_DEFAULTS.items():
         if always_on:
             weights[key] = default
-        elif _gate_active(key, soft, vlm_active):
+        elif _gate_active(key, soft, vlm_active, query_lang):
             weights[key] = default
         else:
             weights[key] = 0.0
@@ -896,7 +929,9 @@ def _resolve_weights(
     return normed, trace
 
 
-def _gate_active(signal: str, soft: SoftPreferences, vlm_active: bool) -> bool:
+def _gate_active(
+    signal: str, soft: SoftPreferences, vlm_active: bool, query_lang: str = "unknown"
+) -> bool:
     if signal == "vlm":
         return vlm_active
     if signal == "geo_transit":
@@ -909,6 +944,8 @@ def _gate_active(signal: str, soft: SoftPreferences, vlm_active: bool) -> bool:
         return bool(soft.anchors) or float(soft.weights.get("geo_anchor", 0.0)) > 0
     if signal == "price_band":
         return soft.price_intent is not None
+    if signal == "lang_match":
+        return query_lang != "unknown"
     return True
 
 
@@ -1063,6 +1100,16 @@ def _merge_geo_columns(
             continue
         for i, col in enumerate(available, start=1):
             target[col] = row[i]
+
+    # Use the COMPARIS-native distance_public_transport as fallback when the
+    # enriched geo_transit_m column is missing or null for a listing.
+    if "geo_transit_m" in available:
+        for target in rows_by_id.values():
+            if target.get("geo_transit_m") is None:
+                native = target.get("distance_public_transport")
+                if native is not None:
+                    target["geo_transit_m"] = native
+
     return available
 
 
