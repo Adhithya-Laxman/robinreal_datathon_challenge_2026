@@ -8,9 +8,9 @@ The MCP server (`datathon2026-listings-app`) exposes three tools for searching S
 
 ### `search_listings`
 
-Search Swiss real-estate listings using a natural-language query.
+Search Swiss real-estate listings and return results as **inline text**.
 
-> The model **must** always call this tool for any housing/apartment/room query — never answer from memory. Every response must include the listing URL and all image URLs as returned.
+> Use this **only** when the user explicitly asks for a plain-text summary, raw data, or programmatic access — never answer from memory. For all standard housing queries, prefer `open_results_page` (the default). Every response must include the listing URL and all image URLs as returned.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
@@ -63,7 +63,7 @@ Use this when the user's query mentions proximity to amenities — e.g. *"near a
 
 Search listings and open a standalone interactive web page with a map and ranked listing cards. Returns a shareable URL — no Claude UI required.
 
-Use this when the user asks to *"show results on a page"*, *"open a viewer"*, or *"see results in the browser"*.
+> **Default tool for all housing queries.** Always call this unless the user explicitly requests inline text results or raw data. Use this when the user asks to search for apartments, flats, rooms, or any property — as well as when they say *"show results on a page"*, *"open a viewer"*, or *"see results in the browser"*.
 
 | Parameter | Type | Required | Default | Description |
 |-----------|------|----------|---------|-------------|
