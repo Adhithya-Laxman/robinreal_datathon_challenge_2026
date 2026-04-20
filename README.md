@@ -313,4 +313,4 @@ Short write-ups for organizers:
 
 ## 14. Technical write-up
 
-See `docs/datathon2026_robinreal_technical_writeup.tex` for a fuller architecture and pipeline description. The original challenge harness emphasized CSV import stubs; this repo’s main search path is the **unified ranker** + artifacts from S3.
+See `technical_writeup.pdf for a fuller architecture and pipeline description. The original challenge harness emphasized CSV import stubs; this repo’s main search path is the **unified ranker** + artifacts from S3.
